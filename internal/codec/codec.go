@@ -5,11 +5,6 @@ import (
 )
 
 const (
-	// Magic constants for file format validation
-	TailMagic   = "TAIL"
-	FileVersion = uint32(1)
-
-	// Fixed sizes for binary structures
 	ChunkEntrySize = 16 // 8 bytes offset + 4 bytes compressed size + 4 bytes uncompressed size
 	IndexEntrySize = 20 // 4 bytes timestamp + 4 bytes actor_id + 8 bytes offset + 4 bytes size
 )
@@ -22,9 +17,6 @@ type IndexEntry []byte
 
 // ChunkEntry represents a chunk entry as raw bytes
 type ChunkEntry []byte
-
-// TailMetadata represents tail metadata as raw bytes
-type TailMetadata []byte
 
 // NewLogEntry creates a new log entry from components
 func NewLogEntry(sequenceID uint32, text string, actors []uint32) (LogEntry, error) {
