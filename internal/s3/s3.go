@@ -223,10 +223,18 @@ func (c *S3Client) ObjectExists(ctx context.Context, key string) (bool, error) {
 	})
 
 	if err != nil {
+		// Check for NoSuchKey error (real AWS)
 		var nsk *types.NoSuchKey
 		if errors.As(err, &nsk) {
 			return false, nil
 		}
+
+		// Check for HTTP 404 errors (mock server or other S3-compatible services)
+		errStr := err.Error()
+		if strings.Contains(errStr, "404") || strings.Contains(errStr, "NotFound") || strings.Contains(errStr, "NoSuchKey") {
+			return false, nil
+		}
+
 		return false, ErrS3Operation{Operation: "head object", Err: err}
 	}
 
