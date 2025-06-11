@@ -7,7 +7,18 @@ import (
 	"time"
 
 	"github.com/RoaringBitmap/roaring/v2"
+	"github.com/kelindar/threads/internal/codec"
 )
+
+// TailMetadata represents the tail metadata structure in log files.
+type TailMetadata struct {
+	Magic      [4]byte            // "TAIL" magic bytes
+	Version    uint32             // File format version
+	DayStart   int64              // Day start timestamp (unix nano)
+	ChunkCount uint32             // Number of chunks
+	Chunks     []codec.ChunkEntry // Chunk metadata entries
+	TailSize   uint32             // Size of tail metadata
+}
 
 // flushBuffer flushes the current buffer to S3.
 func (l *Logger) flushBuffer() error {
@@ -49,14 +60,10 @@ func (l *Logger) flushBuffer() error {
 	var chunkOffset uint64
 	if len(tailMetadata.Chunks) > 0 {
 		lastChunk := tailMetadata.Chunks[len(tailMetadata.Chunks)-1]
-		chunkOffset = lastChunk.Offset + uint64(lastChunk.CompressedSize)
+		chunkOffset = lastChunk.Offset() + uint64(lastChunk.CompressedSize())
 	}
 
-	newChunk := ChunkEntry{
-		Offset:           chunkOffset,
-		CompressedSize:   uint32(len(compressedEntries)),
-		UncompressedSize: uint32(calculateUncompressedSize(entries)),
-	}
+	newChunk := codec.NewChunkEntry(chunkOffset, uint32(len(compressedEntries)), uint32(calculateUncompressedSize(entries)))
 
 	// 3. Append compressed bitmaps and build index entries
 	indexEntries, err := l.appendBitmaps(bitmapKey, actorBitmaps, dayStart)
@@ -96,10 +103,10 @@ func (l *Logger) readTailMetadata(logKey string, dayStart time.Time) (*TailMetad
 		// If file doesn't exist, create new metadata
 		return &TailMetadata{
 			Magic:      [4]byte{'T', 'A', 'I', 'L'},
-			Version:    FileVersion,
+			Version:    codec.FileVersion,
 			DayStart:   dayStart.UnixNano(),
 			ChunkCount: 0,
-			Chunks:     []ChunkEntry{},
+			Chunks:     []codec.ChunkEntry{},
 			TailSize:   0,
 		}, nil
 	}
@@ -136,7 +143,7 @@ func (l *Logger) decodeTailMetadata(data []byte) (*TailMetadata, error) {
 		return nil, ErrFormat{Format: "tail metadata", Err: err}
 	}
 
-	if string(metadata.Magic[:]) != TailMagic {
+	if string(metadata.Magic[:]) != codec.TailMagic {
 		return nil, ErrFormat{Format: "tail metadata", Err: fmt.Errorf("invalid magic")}
 	}
 
@@ -156,18 +163,13 @@ func (l *Logger) decodeTailMetadata(data []byte) (*TailMetadata, error) {
 	}
 
 	// Read chunk entries
-	metadata.Chunks = make([]ChunkEntry, metadata.ChunkCount)
+	metadata.Chunks = make([]codec.ChunkEntry, metadata.ChunkCount)
 	for i := uint32(0); i < metadata.ChunkCount; i++ {
-		chunk := &metadata.Chunks[i]
-		if err := binary.Read(buf, binary.LittleEndian, &chunk.Offset); err != nil {
+		chunkData := make([]byte, codec.ChunkEntrySize)
+		if _, err := buf.Read(chunkData); err != nil {
 			return nil, ErrFormat{Format: "tail metadata", Err: err}
 		}
-		if err := binary.Read(buf, binary.LittleEndian, &chunk.CompressedSize); err != nil {
-			return nil, ErrFormat{Format: "tail metadata", Err: err}
-		}
-		if err := binary.Read(buf, binary.LittleEndian, &chunk.UncompressedSize); err != nil {
-			return nil, ErrFormat{Format: "tail metadata", Err: err}
-		}
+		metadata.Chunks[i] = codec.ChunkEntry(chunkData)
 	}
 
 	// Read tail size
@@ -179,8 +181,8 @@ func (l *Logger) decodeTailMetadata(data []byte) (*TailMetadata, error) {
 }
 
 // appendBitmaps appends compressed bitmaps to the bitmap file and returns index entries.
-func (l *Logger) appendBitmaps(bitmapKey string, actorBitmaps map[uint32]*roaring.Bitmap, dayStart time.Time) ([]IndexEntry, error) {
-	var indexEntries []IndexEntry
+func (l *Logger) appendBitmaps(bitmapKey string, actorBitmaps map[uint32]*roaring.Bitmap, dayStart time.Time) ([]codec.IndexEntry, error) {
+	var indexEntries []codec.IndexEntry
 
 	// Get current bitmap file size to calculate offsets
 	currentSize, err := l.s3Client.GetObjectSize(l.ctx, bitmapKey)
@@ -212,12 +214,7 @@ func (l *Logger) appendBitmaps(bitmapKey string, actorBitmaps map[uint32]*roarin
 		}
 
 		// Create index entry
-		indexEntry := IndexEntry{
-			Timestamp: timestamp,
-			ActorID:   actorID,
-			Offset:    currentOffset,
-			Size:      uint32(len(compressedBitmap)),
-		}
+		indexEntry := codec.NewIndexEntry(timestamp, actorID, currentOffset, uint32(len(compressedBitmap)))
 		indexEntries = append(indexEntries, indexEntry)
 
 		currentOffset += uint64(len(compressedBitmap))
@@ -227,7 +224,7 @@ func (l *Logger) appendBitmaps(bitmapKey string, actorBitmaps map[uint32]*roarin
 }
 
 // appendIndexEntries appends index entries to the index file.
-func (l *Logger) appendIndexEntries(indexKey string, entries []IndexEntry) error {
+func (l *Logger) appendIndexEntries(indexKey string, entries []codec.IndexEntry) error {
 	if len(entries) == 0 {
 		return nil
 	}
@@ -235,18 +232,7 @@ func (l *Logger) appendIndexEntries(indexKey string, entries []IndexEntry) error
 	// Encode index entries
 	buf := &bytes.Buffer{}
 	for _, entry := range entries {
-		if err := binary.Write(buf, binary.LittleEndian, entry.Timestamp); err != nil {
-			return fmt.Errorf("failed to write timestamp: %w", err)
-		}
-		if err := binary.Write(buf, binary.LittleEndian, entry.ActorID); err != nil {
-			return fmt.Errorf("failed to write actor ID: %w", err)
-		}
-		if err := binary.Write(buf, binary.LittleEndian, entry.Offset); err != nil {
-			return fmt.Errorf("failed to write offset: %w", err)
-		}
-		if err := binary.Write(buf, binary.LittleEndian, entry.Size); err != nil {
-			return fmt.Errorf("failed to write size: %w", err)
-		}
+		buf.Write(entry)
 	}
 
 	// Append to index file
@@ -274,10 +260,47 @@ func (l *Logger) updateTailMetadata(logKey string, metadata *TailMetadata) error
 }
 
 // calculateUncompressedSize calculates the total uncompressed size of log entries.
-func calculateUncompressedSize(entries []*LogEntry) int {
+func calculateUncompressedSize(entries []codec.LogEntry) int {
 	total := 0
 	for _, entry := range entries {
-		total += calculateLogEntrySize(entry)
+		total += len(entry)
 	}
 	return total
+}
+
+// encodeTailMetadata encodes tail metadata to binary format.
+func encodeTailMetadata(tail *TailMetadata) ([]byte, error) {
+	buf := &bytes.Buffer{}
+
+	// Write magic (4 bytes)
+	if _, err := buf.Write(tail.Magic[:]); err != nil {
+		return nil, fmt.Errorf("failed to write magic: %w", err)
+	}
+
+	// Write version (4 bytes)
+	if err := binary.Write(buf, binary.LittleEndian, tail.Version); err != nil {
+		return nil, fmt.Errorf("failed to write version: %w", err)
+	}
+
+	// Write day start (8 bytes)
+	if err := binary.Write(buf, binary.LittleEndian, tail.DayStart); err != nil {
+		return nil, fmt.Errorf("failed to write day start: %w", err)
+	}
+
+	// Write chunk count (4 bytes)
+	if err := binary.Write(buf, binary.LittleEndian, tail.ChunkCount); err != nil {
+		return nil, fmt.Errorf("failed to write chunk count: %w", err)
+	}
+
+	// Write chunk entries
+	for _, chunk := range tail.Chunks {
+		buf.Write(chunk)
+	}
+
+	// Write tail size (4 bytes)
+	if err := binary.Write(buf, binary.LittleEndian, tail.TailSize); err != nil {
+		return nil, fmt.Errorf("failed to write tail size: %w", err)
+	}
+
+	return buf.Bytes(), nil
 }

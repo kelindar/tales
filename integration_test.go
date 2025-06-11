@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kelindar/threads/internal/codec"
 	"github.com/kelindar/threads/internal/s3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -141,36 +142,29 @@ func TestSequenceIDGeneration(t *testing.T) {
 
 func TestFileFormats(t *testing.T) {
 	t.Run("LogEntryEncoding", func(t *testing.T) {
-		entry := &LogEntry{
-			SequenceID: 12345,
-			Text:       "Test message",
-			Actors:     []uint32{100, 200, 300},
-		}
-
-		// Encode and decode
-		encoded, err := encodeLogEntry(entry)
+		// Create entry using codec
+		entry, err := codec.NewLogEntry(12345, "Test message", []uint32{100, 200, 300})
 		require.NoError(t, err)
 
-		decoded, err := decodeLogEntry(encoded)
-		require.NoError(t, err)
-
-		// Should match original
-		assert.Equal(t, entry.SequenceID, decoded.SequenceID)
-		assert.Equal(t, entry.Text, decoded.Text)
-		assert.Equal(t, entry.Actors, decoded.Actors)
+		// Test accessors
+		assert.Equal(t, uint32(12345), entry.SequenceID())
+		assert.Equal(t, "Test message", entry.Text())
+		assert.Equal(t, []uint32{100, 200, 300}, entry.Actors())
 	})
 
 	t.Run("TailMetadataEncoding", func(t *testing.T) {
+		chunks := []codec.ChunkEntry{
+			codec.NewChunkEntry(0, 100, 200),
+			codec.NewChunkEntry(100, 150, 300),
+		}
+
 		metadata := &TailMetadata{
 			Magic:      [4]byte{'T', 'A', 'I', 'L'},
 			Version:    1,
 			DayStart:   time.Now().UnixNano(),
 			ChunkCount: 2,
-			Chunks: []ChunkEntry{
-				{Offset: 0, CompressedSize: 100, UncompressedSize: 200},
-				{Offset: 100, CompressedSize: 150, UncompressedSize: 300},
-			},
-			TailSize: 0, // Will be set during encoding
+			Chunks:     chunks,
+			TailSize:   0, // Will be set during encoding
 		}
 
 		// Encode
@@ -179,6 +173,13 @@ func TestFileFormats(t *testing.T) {
 
 		// The encoded data should contain the magic bytes
 		assert.Contains(t, string(encoded[:4]), "TAIL")
+
+		// Test chunk accessors
+		for i, chunk := range chunks {
+			assert.Equal(t, uint64(i*100), chunk.Offset())
+			assert.Equal(t, uint32(100+i*50), chunk.CompressedSize())
+			assert.Equal(t, uint32(200+i*100), chunk.UncompressedSize())
+		}
 	})
 }
 

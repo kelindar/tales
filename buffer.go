@@ -5,12 +5,13 @@ import (
 	"time"
 
 	"github.com/RoaringBitmap/roaring/v2"
+	"github.com/kelindar/threads/internal/codec"
 )
 
 // Buffer represents the in-memory buffer for the current chunk.
 type Buffer struct {
 	mu           sync.RWMutex
-	entries      []*LogEntry
+	entries      []codec.LogEntry
 	actorBitmaps map[uint32]*roaring.Bitmap // Actor ID -> sequence IDs bitmap
 	maxSize      int
 	chunkStart   time.Time
@@ -19,7 +20,7 @@ type Buffer struct {
 // NewBuffer creates a new buffer with the specified maximum size.
 func NewBuffer(maxSize int) *Buffer {
 	return &Buffer{
-		entries:      make([]*LogEntry, 0, maxSize),
+		entries:      make([]codec.LogEntry, 0, maxSize),
 		actorBitmaps: make(map[uint32]*roaring.Bitmap),
 		maxSize:      maxSize,
 		chunkStart:   time.Now(),
@@ -27,7 +28,7 @@ func NewBuffer(maxSize int) *Buffer {
 }
 
 // Add adds a log entry to the buffer and updates actor bitmaps.
-func (b *Buffer) Add(entry *LogEntry) bool {
+func (b *Buffer) Add(entry codec.LogEntry) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -39,35 +40,39 @@ func (b *Buffer) Add(entry *LogEntry) bool {
 	// Add entry to buffer
 	b.entries = append(b.entries, entry)
 
+	// Get sequence ID and actors using accessors
+	sequenceID := entry.SequenceID()
+	actors := entry.Actors()
+
 	// Update actor bitmaps
-	for _, actorID := range entry.Actors {
+	for _, actorID := range actors {
 		bitmap := b.actorBitmaps[actorID]
 		if bitmap == nil {
 			bitmap = roaring.New()
 			b.actorBitmaps[actorID] = bitmap
 		}
-		bitmap.Add(entry.SequenceID)
+		bitmap.Add(sequenceID)
 	}
 
 	return true
 }
 
 // GetEntries returns a copy of all entries in the buffer.
-func (b *Buffer) GetEntries() []*LogEntry {
+func (b *Buffer) GetEntries() []codec.LogEntry {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
-	entries := make([]*LogEntry, len(b.entries))
+	entries := make([]codec.LogEntry, len(b.entries))
 	copy(entries, b.entries)
 	return entries
 }
 
 // GetActorEntries returns entries for a specific actor within a time range.
-func (b *Buffer) GetActorEntries(actorID uint32, dayStart time.Time, from, to time.Time) []*LogEntry {
+func (b *Buffer) GetActorEntries(actorID uint32, dayStart time.Time, from, to time.Time) []codec.LogEntry {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
-	var result []*LogEntry
+	var result []codec.LogEntry
 
 	// Get bitmap for this actor
 	bitmap := b.actorBitmaps[actorID]
@@ -81,9 +86,13 @@ func (b *Buffer) GetActorEntries(actorID uint32, dayStart time.Time, from, to ti
 
 	// Find entries with sequence IDs in range
 	for _, entry := range b.entries {
-		if entry.SequenceID >= fromSeq && entry.SequenceID <= toSeq {
+		sequenceID := entry.SequenceID()
+		if sequenceID >= fromSeq && sequenceID <= toSeq {
+			// Get actors using accessor
+			actors := entry.Actors()
+
 			// Check if this entry contains the actor
-			for _, actor := range entry.Actors {
+			for _, actor := range actors {
 				if actor == actorID {
 					result = append(result, entry)
 					break

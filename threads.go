@@ -2,11 +2,13 @@ package threads
 
 import (
 	"context"
+	"fmt"
 	"iter"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/kelindar/threads/internal/codec"
 	"github.com/kelindar/threads/internal/s3"
 )
 
@@ -100,13 +102,11 @@ func (l *Logger) Log(text string, actors []uint32) error {
 	// Generate sequence ID (ensure both times are in UTC)
 	sequenceID := generateSequenceID(l.dayStart, now.UTC(), &l.atomicCounter)
 
-	// Create log entry
-	entry := &LogEntry{
-		SequenceID: sequenceID,
-		Text:       text,
-		Actors:     make([]uint32, len(actors)),
+	// Create log entry using codec
+	entry, err := codec.NewLogEntry(sequenceID, text, actors)
+	if err != nil {
+		return fmt.Errorf("failed to create log entry: %w", err)
 	}
-	copy(entry.Actors, actors)
 
 	// Add to buffer
 	if !l.buffer.Add(entry) {
@@ -214,7 +214,12 @@ func (l *Logger) queryMemoryBuffer(actor uint32, from, to time.Time, yield func(
 	entries := l.buffer.GetActorEntries(actor, dayStart, from, to)
 
 	for _, entry := range entries {
-		timestamp := reconstructTimestamp(entry.SequenceID, dayStart)
+		sequenceID := entry.SequenceID()
+		timestamp := reconstructTimestamp(sequenceID, dayStart)
+
+		// Get text using accessor
+		text := entry.Text()
+
 		// Convert all times to UTC for comparison
 		timestampUTC := timestamp.UTC()
 		fromUTC := from.UTC()
@@ -222,7 +227,7 @@ func (l *Logger) queryMemoryBuffer(actor uint32, from, to time.Time, yield func(
 
 		// Use >= and <= for inclusive range check
 		if (timestampUTC.Equal(fromUTC) || timestampUTC.After(fromUTC)) && (timestampUTC.Equal(toUTC) || timestampUTC.Before(toUTC)) {
-			if !yield(timestamp, entry.Text) {
+			if !yield(timestamp, text) {
 				return
 			}
 		}

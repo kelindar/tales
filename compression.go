@@ -3,6 +3,7 @@ package threads
 import (
 	"bytes"
 
+	"github.com/kelindar/threads/internal/codec"
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -62,19 +63,15 @@ func decompressData(compressed []byte) ([]byte, error) {
 }
 
 // compressLogEntries compresses a slice of log entries.
-func compressLogEntries(entries []*LogEntry) ([]byte, error) {
+func compressLogEntries(entries []codec.LogEntry) ([]byte, error) {
 	if len(entries) == 0 {
 		return nil, nil
 	}
 
-	// Encode all entries to a single buffer
+	// Concatenate all entries to a single buffer
 	buf := &bytes.Buffer{}
 	for _, entry := range entries {
-		encoded, err := encodeLogEntry(entry)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := buf.Write(encoded); err != nil {
+		if _, err := buf.Write(entry); err != nil {
 			return nil, ErrFormat{Format: "log entries", Err: err}
 		}
 	}
@@ -83,8 +80,8 @@ func compressLogEntries(entries []*LogEntry) ([]byte, error) {
 	return compressData(buf.Bytes())
 }
 
-// decompressLogEntries decompresses and decodes log entries.
-func decompressLogEntries(compressed []byte) ([]*LogEntry, error) {
+// decompressLogEntries decompresses log entries.
+func decompressLogEntries(compressed []byte) ([]codec.LogEntry, error) {
 	if len(compressed) == 0 {
 		return nil, nil
 	}
@@ -95,50 +92,39 @@ func decompressLogEntries(compressed []byte) ([]*LogEntry, error) {
 		return nil, err
 	}
 
-	// Decode entries from the decompressed data
-	var entries []*LogEntry
-	buf := bytes.NewReader(decompressed)
+	// Parse entries from the decompressed data
+	var entries []codec.LogEntry
+	buf := decompressed
 
-	for buf.Len() > 0 {
-		// Read the next entry
-		// We need to determine the entry size by parsing it
-		remaining := make([]byte, buf.Len())
-		if _, err := buf.Read(remaining); err != nil {
-			return nil, ErrFormat{Format: "log entries", Err: err}
+	for len(buf) > 0 {
+		// Parse the current entry to determine its size
+		entry := codec.LogEntry(buf)
+		sequenceID := entry.SequenceID()
+		text := entry.Text()
+		actors := entry.Actors()
+
+		// Check if parsing was successful (non-zero sequence ID indicates valid entry)
+		if sequenceID == 0 && len(text) == 0 && len(actors) == 0 {
+			break // End of valid data
 		}
 
-		// Reset buffer to beginning of remaining data
-		buf = bytes.NewReader(remaining)
-
-		// Try to decode one entry
-		entry, err := decodeLogEntry(remaining)
+		// Re-encode to get the exact size
+		reconstructed, err := codec.NewLogEntry(sequenceID, text, actors)
 		if err != nil {
-			return nil, err
-		}
-
-		entries = append(entries, entry)
-
-		// Calculate how much data was consumed
-		consumed := calculateLogEntrySize(entry)
-		if consumed > len(remaining) {
 			break
 		}
 
-		// Move to next entry
-		buf = bytes.NewReader(remaining[consumed:])
+		entrySize := len(reconstructed)
+		if len(buf) < entrySize {
+			break
+		}
+
+		// Extract the entry
+		entries = append(entries, codec.LogEntry(buf[:entrySize]))
+		buf = buf[entrySize:]
 	}
 
 	return entries, nil
-}
-
-// calculateLogEntrySize calculates the binary size of a log entry.
-func calculateLogEntrySize(entry *LogEntry) int {
-	size := 4 // sequence ID
-	size += varintSize(uint64(len(entry.Text)))
-	size += varintSize(uint64(len(entry.Actors)))
-	size += len(entry.Text)
-	size += len(entry.Actors) * 4 // 4 bytes per actor ID
-	return size
 }
 
 // varintSize calculates the size of a varint encoding.

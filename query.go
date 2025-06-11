@@ -1,13 +1,12 @@
 package threads
 
 import (
-	"bytes"
-	"encoding/binary"
 	"fmt"
 	"sort"
 	"time"
 
 	"github.com/RoaringBitmap/roaring/v2"
+	"github.com/kelindar/threads/internal/codec"
 )
 
 // queryS3Historical implements the S3 historical query logic.
@@ -67,48 +66,37 @@ func (l *Logger) queryS3Day(actor uint32, dayStart time.Time, from, to time.Time
 }
 
 // downloadIndexEntries downloads and parses the index file.
-func (l *Logger) downloadIndexEntries(indexKey string) ([]IndexEntry, error) {
+func (l *Logger) downloadIndexEntries(indexKey string) ([]codec.IndexEntry, error) {
 	data, err := l.s3Client.DownloadData(l.ctx, indexKey)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(data)%IndexEntrySize != 0 {
+	if len(data)%codec.IndexEntrySize != 0 {
 		return nil, ErrFormat{Format: "index file", Err: fmt.Errorf("invalid file size")}
 	}
 
-	entryCount := len(data) / IndexEntrySize
-	entries := make([]IndexEntry, entryCount)
+	entryCount := len(data) / codec.IndexEntrySize
+	entries := make([]codec.IndexEntry, entryCount)
 
-	buf := bytes.NewReader(data)
 	for i := 0; i < entryCount; i++ {
-		entry := &entries[i]
-		if err := binary.Read(buf, binary.LittleEndian, &entry.Timestamp); err != nil {
-			return nil, ErrFormat{Format: "index entry", Err: err}
-		}
-		if err := binary.Read(buf, binary.LittleEndian, &entry.ActorID); err != nil {
-			return nil, ErrFormat{Format: "index entry", Err: err}
-		}
-		if err := binary.Read(buf, binary.LittleEndian, &entry.Offset); err != nil {
-			return nil, ErrFormat{Format: "index entry", Err: err}
-		}
-		if err := binary.Read(buf, binary.LittleEndian, &entry.Size); err != nil {
-			return nil, ErrFormat{Format: "index entry", Err: err}
-		}
+		start := i * codec.IndexEntrySize
+		end := start + codec.IndexEntrySize
+		entries[i] = codec.IndexEntry(data[start:end])
 	}
 
 	return entries, nil
 }
 
 // filterIndexEntries filters index entries by actor and time range.
-func (l *Logger) filterIndexEntries(entries []IndexEntry, actor uint32, dayStart, from, to time.Time) []IndexEntry {
-	var filtered []IndexEntry
+func (l *Logger) filterIndexEntries(entries []codec.IndexEntry, actor uint32, dayStart, from, to time.Time) []codec.IndexEntry {
+	var filtered []codec.IndexEntry
 
 	fromSeconds := uint32(from.Sub(dayStart).Seconds())
 	toSeconds := uint32(to.Sub(dayStart).Seconds())
 
 	for _, entry := range entries {
-		if entry.ActorID == actor && entry.Timestamp >= fromSeconds && entry.Timestamp <= toSeconds {
+		if entry.ActorID() == actor && entry.Timestamp() >= fromSeconds && entry.Timestamp() <= toSeconds {
 			filtered = append(filtered, entry)
 		}
 	}
@@ -117,12 +105,12 @@ func (l *Logger) filterIndexEntries(entries []IndexEntry, actor uint32, dayStart
 }
 
 // downloadAndMergeBitmaps downloads bitmap chunks and merges them.
-func (l *Logger) downloadAndMergeBitmaps(bitmapKey string, entries []IndexEntry) (*roaring.Bitmap, error) {
+func (l *Logger) downloadAndMergeBitmaps(bitmapKey string, entries []codec.IndexEntry) (*roaring.Bitmap, error) {
 	mergedBitmap := roaring.New()
 
 	for _, entry := range entries {
 		// Download bitmap chunk using byte range
-		compressedData, err := l.s3Client.DownloadRange(l.ctx, bitmapKey, int64(entry.Offset), int64(entry.Offset+uint64(entry.Size)-1))
+		compressedData, err := l.s3Client.DownloadRange(l.ctx, bitmapKey, int64(entry.Offset()), int64(entry.Offset()+uint64(entry.Size())-1))
 		if err != nil {
 			continue // Skip failed downloads
 		}
@@ -195,9 +183,9 @@ func (l *Logger) groupSequenceIDsByChunk(bitmap *roaring.Bitmap, tailMetadata *T
 }
 
 // queryLogChunk queries a specific log chunk for sequence IDs.
-func (l *Logger) queryLogChunk(logKey string, chunk ChunkEntry, sequenceIDs *roaring.Bitmap, dayStart, from, to time.Time, yield func(time.Time, string) bool) bool {
+func (l *Logger) queryLogChunk(logKey string, chunk codec.ChunkEntry, sequenceIDs *roaring.Bitmap, dayStart, from, to time.Time, yield func(time.Time, string) bool) bool {
 	// Download chunk using byte range
-	compressedData, err := l.s3Client.DownloadRange(l.ctx, logKey, int64(chunk.Offset), int64(chunk.Offset+uint64(chunk.CompressedSize)-1))
+	compressedData, err := l.s3Client.DownloadRange(l.ctx, logKey, int64(chunk.Offset()), int64(chunk.Offset()+uint64(chunk.CompressedSize())-1))
 	if err != nil {
 		return true // Skip failed downloads
 	}
@@ -216,10 +204,11 @@ func (l *Logger) queryLogChunk(logKey string, chunk ChunkEntry, sequenceIDs *roa
 
 	// Filter and yield matching entries
 	for _, entry := range entries {
-		if sequenceIDs.Contains(entry.SequenceID) {
-			timestamp := reconstructTimestamp(entry.SequenceID, dayStart)
+		sequenceID := entry.SequenceID()
+		if sequenceIDs.Contains(sequenceID) {
+			timestamp := reconstructTimestamp(sequenceID, dayStart)
 			if timestamp.After(from) && timestamp.Before(to) {
-				if !yield(timestamp, entry.Text) {
+				if !yield(timestamp, entry.Text()) {
 					return false
 				}
 			}
@@ -230,39 +219,36 @@ func (l *Logger) queryLogChunk(logKey string, chunk ChunkEntry, sequenceIDs *roa
 }
 
 // parseLogEntriesFromData parses log entries from raw decompressed data.
-func (l *Logger) parseLogEntriesFromData(data []byte) ([]*LogEntry, error) {
-	var entries []*LogEntry
-	buf := bytes.NewReader(data)
+func (l *Logger) parseLogEntriesFromData(data []byte) ([]codec.LogEntry, error) {
+	var entries []codec.LogEntry
+	buf := data
 
-	for buf.Len() > 0 {
-		// Read sequence ID to determine if we have a valid entry
-		var sequenceID uint32
-		if err := binary.Read(buf, binary.LittleEndian, &sequenceID); err != nil {
-			break // End of data
+	for len(buf) > 0 {
+		// Try to parse the current entry
+		entry := codec.LogEntry(buf)
+		sequenceID := entry.SequenceID()
+		text := entry.Text()
+		actors := entry.Actors()
+
+		// Check if parsing was successful
+		if sequenceID == 0 && len(text) == 0 && len(actors) == 0 {
+			break // End of valid data
 		}
 
-		// Reset buffer to include the sequence ID we just read
-		remaining := make([]byte, buf.Len()+4)
-		binary.LittleEndian.PutUint32(remaining[:4], sequenceID)
-		if _, err := buf.Read(remaining[4:]); err != nil {
-			break
-		}
-
-		// Try to decode the entry
-		entry, err := decodeLogEntry(remaining)
+		// Re-encode to get the exact size
+		reconstructed, err := codec.NewLogEntry(sequenceID, text, actors)
 		if err != nil {
-			break // Parsing error, stop
-		}
-
-		entries = append(entries, entry)
-
-		// Calculate consumed bytes and advance buffer
-		consumed := calculateLogEntrySize(entry)
-		if consumed > len(remaining) {
 			break
 		}
 
-		buf = bytes.NewReader(remaining[consumed:])
+		entrySize := len(reconstructed)
+		if len(buf) < entrySize {
+			break
+		}
+
+		// Extract the entry
+		entries = append(entries, codec.LogEntry(buf[:entrySize]))
+		buf = buf[entrySize:]
 	}
 
 	return entries, nil
