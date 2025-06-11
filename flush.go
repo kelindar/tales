@@ -51,7 +51,7 @@ func (l *Logger) flushBuffer() error {
 	}
 
 	// 2. Compress log entries (data is already concatenated in buffer)
-	compressedEntries, err := codec.Compress(entriesData)
+	compressedEntries, err := l.codec.Compress(entriesData)
 	if err != nil {
 		return fmt.Errorf("failed to compress log entries: %w", err)
 	}
@@ -202,7 +202,7 @@ func (l *Logger) appendBitmaps(bitmapKey string, actorBitmaps map[uint32]*roarin
 		}
 
 		// Compress bitmap
-		compressedBitmap, err := codec.Compress(bitmapData)
+		compressedBitmap, err := l.codec.Compress(bitmapData)
 		if err != nil {
 			return nil, fmt.Errorf("failed to compress bitmap for actor %d: %w", actorID, err)
 		}

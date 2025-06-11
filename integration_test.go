@@ -2,6 +2,7 @@ package threads
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -227,12 +228,16 @@ func TestBufferOptimization(t *testing.T) {
 		assert.Equal(t, []uint32{300}, entries[2].Actors())
 
 		// Verify compression works directly on buffer data
-		compressed, err := codec.Compress(data)
+		codecInstance, err := codec.NewCodec()
+		require.NoError(t, err)
+		defer codecInstance.Close()
+
+		compressed, err := codecInstance.Compress(data)
 		require.NoError(t, err)
 		assert.NotEmpty(t, compressed)
 
 		// Verify decompression
-		decompressed, err := codec.Decompress(compressed)
+		decompressed, err := codecInstance.Decompress(compressed)
 		require.NoError(t, err)
 		assert.Equal(t, data, decompressed)
 	})
@@ -256,7 +261,11 @@ func createLoggerWithMockS3(mockS3 *s3.MockS3Server) (*Logger, error) {
 		BufferSize:    1000,
 	}
 
-	// Compression is initialized automatically in codec package
+	// Create codec for compression/decompression
+	codecInstance, err := codec.NewCodec()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create codec: %w", err)
+	}
 
 	// Create context for background operations
 	ctx, cancel := context.WithCancel(context.Background())
@@ -270,6 +279,7 @@ func createLoggerWithMockS3(mockS3 *s3.MockS3Server) (*Logger, error) {
 	logger := &Logger{
 		config:   config,
 		s3Client: customS3Client,
+		codec:    codecInstance,
 		buffer:   buffer,
 		dayStart: dayStart,
 		ctx:      ctx,

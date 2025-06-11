@@ -106,31 +106,43 @@ func TestEdgeCases(t *testing.T) {
 
 func TestCompression(t *testing.T) {
 	t.Run("CompressAndDecompress", func(t *testing.T) {
+		codec, err := NewCodec()
+		require.NoError(t, err)
+		defer codec.Close()
+
 		originalData := []byte("Hello, world! This is a test string for compression.")
 
 		// Compress
-		compressed, err := Compress(originalData)
+		compressed, err := codec.Compress(originalData)
 		require.NoError(t, err)
 		assert.NotEmpty(t, compressed)
 
 		// Decompress
-		decompressed, err := Decompress(compressed)
+		decompressed, err := codec.Decompress(compressed)
 		require.NoError(t, err)
 		assert.Equal(t, originalData, decompressed)
 	})
 
 	t.Run("EmptyData", func(t *testing.T) {
+		codec, err := NewCodec()
+		require.NoError(t, err)
+		defer codec.Close()
+
 		// Compress empty data
-		compressed, err := Compress([]byte{})
+		compressed, err := codec.Compress([]byte{})
 		require.NoError(t, err)
 
 		// Decompress empty data
-		decompressed, err := Decompress(compressed)
+		decompressed, err := codec.Decompress(compressed)
 		require.NoError(t, err)
 		assert.Empty(t, decompressed)
 	})
 
 	t.Run("LargeData", func(t *testing.T) {
+		codec, err := NewCodec()
+		require.NoError(t, err)
+		defer codec.Close()
+
 		// Create large data
 		largeData := make([]byte, 10000)
 		for i := range largeData {
@@ -138,12 +150,12 @@ func TestCompression(t *testing.T) {
 		}
 
 		// Compress
-		compressed, err := Compress(largeData)
+		compressed, err := codec.Compress(largeData)
 		require.NoError(t, err)
 		assert.Less(t, len(compressed), len(largeData)) // Should be compressed
 
 		// Decompress
-		decompressed, err := Decompress(compressed)
+		decompressed, err := codec.Decompress(compressed)
 		require.NoError(t, err)
 		assert.Equal(t, largeData, decompressed)
 	})

@@ -4,54 +4,42 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
-// Compression utilities for ZSTD compression/decompression.
-
-var (
-	// Global encoder and decoder for reuse
+// Codec handles ZSTD compression and decompression operations.
+type Codec struct {
 	encoder *zstd.Encoder
 	decoder *zstd.Decoder
-)
+}
 
-// initCompression initializes the global encoder and decoder.
-func initCompression() error {
-	var err error
-
+// NewCodec creates a new codec with ZSTD encoder and decoder.
+func NewCodec() (*Codec, error) {
 	// Create encoder with default settings
-	encoder, err = zstd.NewWriter(nil)
+	encoder, err := zstd.NewWriter(nil)
 	if err != nil {
-		return &CompressionError{Operation: "create encoder", Err: err}
+		return nil, &CompressionError{Operation: "create encoder", Err: err}
 	}
 
 	// Create decoder with default settings
-	decoder, err = zstd.NewReader(nil)
+	decoder, err := zstd.NewReader(nil)
 	if err != nil {
-		return &CompressionError{Operation: "create decoder", Err: err}
+		encoder.Close() // Clean up encoder if decoder creation fails
+		return nil, &CompressionError{Operation: "create decoder", Err: err}
 	}
 
-	return nil
+	return &Codec{
+		encoder: encoder,
+		decoder: decoder,
+	}, nil
 }
 
 // Compress compresses data using ZSTD compression.
-func Compress(data []byte) ([]byte, error) {
-	if encoder == nil {
-		if err := initCompression(); err != nil {
-			return nil, err
-		}
-	}
-
-	compressed := encoder.EncodeAll(data, make([]byte, 0, len(data)))
+func (c *Codec) Compress(data []byte) ([]byte, error) {
+	compressed := c.encoder.EncodeAll(data, make([]byte, 0, len(data)))
 	return compressed, nil
 }
 
 // Decompress decompresses ZSTD compressed data.
-func Decompress(compressed []byte) ([]byte, error) {
-	if decoder == nil {
-		if err := initCompression(); err != nil {
-			return nil, err
-		}
-	}
-
-	decompressed, err := decoder.DecodeAll(compressed, nil)
+func (c *Codec) Decompress(compressed []byte) ([]byte, error) {
+	decompressed, err := c.decoder.DecodeAll(compressed, nil)
 	if err != nil {
 		return nil, &CompressionError{Operation: "decompress", Err: err}
 	}
@@ -59,15 +47,15 @@ func Decompress(compressed []byte) ([]byte, error) {
 	return decompressed, nil
 }
 
-// Close closes the global encoder and decoder.
-func Close() {
-	if encoder != nil {
-		encoder.Close()
-		encoder = nil
+// Close closes the encoder and decoder.
+func (c *Codec) Close() {
+	if c.encoder != nil {
+		c.encoder.Close()
+		c.encoder = nil
 	}
-	if decoder != nil {
-		decoder.Close()
-		decoder = nil
+	if c.decoder != nil {
+		c.decoder.Close()
+		c.decoder = nil
 	}
 }
 

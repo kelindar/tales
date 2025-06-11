@@ -16,6 +16,7 @@ import (
 type Logger struct {
 	config        Config
 	s3Client      s3.Client
+	codec         *codec.Codec
 	buffer        *Buffer
 	atomicCounter uint32
 	dayStart      time.Time
@@ -40,7 +41,11 @@ func New(config Config) (*Logger, error) {
 		return nil, err
 	}
 
-	// No need to initialize compression - it's handled automatically in codec package
+	// Create codec for compression/decompression
+	codecInstance, err := codec.NewCodec()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create codec: %w", err)
+	}
 
 	// Create context for background operations
 	ctx, cancel := context.WithCancel(context.Background())
@@ -48,6 +53,7 @@ func New(config Config) (*Logger, error) {
 	// Create S3 client
 	s3Client, err := s3.NewClient(ctx, config.S3Config)
 	if err != nil {
+		codecInstance.Close()
 		cancel()
 		return nil, err
 	}
@@ -61,6 +67,7 @@ func New(config Config) (*Logger, error) {
 	logger := &Logger{
 		config:   config,
 		s3Client: s3Client,
+		codec:    codecInstance,
 		buffer:   buffer,
 		dayStart: dayStart,
 		ctx:      ctx,
@@ -158,7 +165,7 @@ func (l *Logger) Close() error {
 	}
 
 	// Close compression resources
-	codec.Close()
+	l.codec.Close()
 
 	return nil
 }
