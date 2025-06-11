@@ -11,20 +11,6 @@ func (e ErrInvalidConfig) Error() string {
 	return fmt.Sprintf("invalid configuration: %s", string(e))
 }
 
-// ErrCompression represents a compression/decompression error.
-type ErrCompression struct {
-	Operation string
-	Err       error
-}
-
-func (e ErrCompression) Error() string {
-	return fmt.Sprintf("compression operation failed (%s): %v", e.Operation, e.Err)
-}
-
-func (e ErrCompression) Unwrap() error {
-	return e.Err
-}
-
 // ErrFormat represents a file format error.
 type ErrFormat struct {
 	Format string

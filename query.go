@@ -116,7 +116,7 @@ func (l *Logger) downloadAndMergeBitmaps(bitmapKey string, entries []codec.Index
 		}
 
 		// Decompress bitmap
-		bitmapData, err := decompressBitmap(compressedData)
+		bitmapData, err := codec.Decompress(compressedData)
 		if err != nil {
 			continue // Skip decompression errors
 		}
@@ -191,7 +191,7 @@ func (l *Logger) queryLogChunk(logKey string, chunk codec.ChunkEntry, sequenceID
 	}
 
 	// Decompress chunk
-	decompressedData, err := decompressData(compressedData)
+	decompressedData, err := codec.Decompress(compressedData)
 	if err != nil {
 		return true // Skip decompression errors
 	}

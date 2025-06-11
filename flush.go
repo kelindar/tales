@@ -30,7 +30,7 @@ func (l *Logger) flushBuffer() error {
 	}
 
 	// Get current buffer data
-	entries := l.buffer.GetEntries()
+	entriesData := l.buffer.GetData()
 	actorBitmaps := l.buffer.GetAllActorBitmaps()
 
 	l.mu.RLock()
@@ -50,8 +50,8 @@ func (l *Logger) flushBuffer() error {
 		return fmt.Errorf("failed to read tail metadata: %w", err)
 	}
 
-	// 2. Compress and append log entries
-	compressedEntries, err := compressLogEntries(entries)
+	// 2. Compress log entries (data is already concatenated in buffer)
+	compressedEntries, err := codec.Compress(entriesData)
 	if err != nil {
 		return fmt.Errorf("failed to compress log entries: %w", err)
 	}
@@ -63,7 +63,7 @@ func (l *Logger) flushBuffer() error {
 		chunkOffset = lastChunk.Offset() + uint64(lastChunk.CompressedSize())
 	}
 
-	newChunk := codec.NewChunkEntry(chunkOffset, uint32(len(compressedEntries)), uint32(calculateUncompressedSize(entries)))
+	newChunk := codec.NewChunkEntry(chunkOffset, uint32(len(compressedEntries)), uint32(len(entriesData)))
 
 	// 3. Append compressed bitmaps and build index entries
 	indexEntries, err := l.appendBitmaps(bitmapKey, actorBitmaps, dayStart)
@@ -202,7 +202,7 @@ func (l *Logger) appendBitmaps(bitmapKey string, actorBitmaps map[uint32]*roarin
 		}
 
 		// Compress bitmap
-		compressedBitmap, err := compressBitmap(bitmapData)
+		compressedBitmap, err := codec.Compress(bitmapData)
 		if err != nil {
 			return nil, fmt.Errorf("failed to compress bitmap for actor %d: %w", actorID, err)
 		}
@@ -256,15 +256,6 @@ func (l *Logger) updateTailMetadata(logKey string, metadata *TailMetadata) error
 
 	// Append to log file
 	return l.s3Client.AppendData(l.ctx, logKey, encodedMetadata)
-}
-
-// calculateUncompressedSize calculates the total uncompressed size of log entries.
-func calculateUncompressedSize(entries []codec.LogEntry) int {
-	total := 0
-	for _, entry := range entries {
-		total += len(entry)
-	}
-	return total
 }
 
 // encodeTailMetadata encodes tail metadata to binary format.

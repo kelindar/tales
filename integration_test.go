@@ -183,6 +183,61 @@ func TestFileFormats(t *testing.T) {
 	})
 }
 
+func TestBufferOptimization(t *testing.T) {
+	t.Run("BufferDataConcatenation", func(t *testing.T) {
+		buffer := NewBuffer(10)
+
+		// Add multiple entries
+		entry1, err := codec.NewLogEntry(1, "First", []uint32{100})
+		require.NoError(t, err)
+
+		entry2, err := codec.NewLogEntry(2, "Second", []uint32{200})
+		require.NoError(t, err)
+
+		entry3, err := codec.NewLogEntry(3, "Third", []uint32{300})
+		require.NoError(t, err)
+
+		// Add entries to buffer
+		assert.True(t, buffer.Add(entry1))
+		assert.True(t, buffer.Add(entry2))
+		assert.True(t, buffer.Add(entry3))
+
+		// Verify buffer state
+		assert.Equal(t, 3, buffer.Size())
+		assert.False(t, buffer.IsEmpty())
+
+		// Get raw data (should be concatenated)
+		data := buffer.GetData()
+		assert.NotEmpty(t, data)
+
+		// Verify we can parse entries back from raw data
+		entries := buffer.GetEntries()
+		require.Len(t, entries, 3)
+
+		assert.Equal(t, uint32(1), entries[0].ID())
+		assert.Equal(t, "First", entries[0].Text())
+		assert.Equal(t, []uint32{100}, entries[0].Actors())
+
+		assert.Equal(t, uint32(2), entries[1].ID())
+		assert.Equal(t, "Second", entries[1].Text())
+		assert.Equal(t, []uint32{200}, entries[1].Actors())
+
+		assert.Equal(t, uint32(3), entries[2].ID())
+		assert.Equal(t, "Third", entries[2].Text())
+		assert.Equal(t, []uint32{300}, entries[2].Actors())
+
+		// Verify compression works directly on buffer data
+		compressed, err := codec.Compress(data)
+		require.NoError(t, err)
+		assert.NotEmpty(t, compressed)
+
+		// Verify decompression
+		decompressed, err := codec.Decompress(compressed)
+		require.NoError(t, err)
+		assert.Equal(t, data, decompressed)
+	})
+}
+
 // createLoggerWithMockS3 creates a logger configured to use the mock S3 server
 func createLoggerWithMockS3(mockS3 *s3.MockS3Server) (*Logger, error) {
 	// Create S3 config for mock server
@@ -201,10 +256,7 @@ func createLoggerWithMockS3(mockS3 *s3.MockS3Server) (*Logger, error) {
 		BufferSize:    1000,
 	}
 
-	// Initialize compression
-	if err := initCompression(); err != nil {
-		return nil, err
-	}
+	// Compression is initialized automatically in codec package
 
 	// Create context for background operations
 	ctx, cancel := context.WithCancel(context.Background())

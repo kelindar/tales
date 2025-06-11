@@ -40,10 +40,7 @@ func New(config Config) (*Logger, error) {
 		return nil, err
 	}
 
-	// Initialize compression
-	if err := initCompression(); err != nil {
-		return nil, err
-	}
+	// No need to initialize compression - it's handled automatically in codec package
 
 	// Create context for background operations
 	ctx, cancel := context.WithCancel(context.Background())
@@ -161,7 +158,7 @@ func (l *Logger) Close() error {
 	}
 
 	// Close compression resources
-	closeCompression()
+	codec.Close()
 
 	return nil
 }

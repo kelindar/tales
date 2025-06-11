@@ -11,17 +11,19 @@ import (
 // Buffer represents the in-memory buffer for the current chunk.
 type Buffer struct {
 	mu           sync.RWMutex
-	entries      []codec.LogEntry
+	data         []byte                     // Raw concatenated log entries
 	actorBitmaps map[uint32]*roaring.Bitmap // Actor ID -> sequence IDs bitmap
-	maxSize      int
+	entryCount   int                        // Number of entries in buffer
+	maxSize      int                        // Maximum number of entries
 	chunkStart   time.Time
 }
 
 // NewBuffer creates a new buffer with the specified maximum size.
 func NewBuffer(maxSize int) *Buffer {
 	return &Buffer{
-		entries:      make([]codec.LogEntry, 0, maxSize),
+		data:         make([]byte, 0, maxSize*100), // Estimate ~100 bytes per entry
 		actorBitmaps: make(map[uint32]*roaring.Bitmap),
+		entryCount:   0,
 		maxSize:      maxSize,
 		chunkStart:   time.Now(),
 	}
@@ -33,12 +35,13 @@ func (b *Buffer) Add(entry codec.LogEntry) bool {
 	defer b.mu.Unlock()
 
 	// Check if buffer is full
-	if len(b.entries) >= b.maxSize {
+	if b.entryCount >= b.maxSize {
 		return false
 	}
 
-	// Add entry to buffer
-	b.entries = append(b.entries, entry)
+	// Add entry to buffer data
+	b.data = append(b.data, entry...)
+	b.entryCount++
 
 	// Get sequence ID and actors using accessors
 	sequenceID := entry.ID()
@@ -57,13 +60,57 @@ func (b *Buffer) Add(entry codec.LogEntry) bool {
 	return true
 }
 
-// GetEntries returns a copy of all entries in the buffer.
+// GetEntries returns all entries in the buffer by parsing the raw data.
 func (b *Buffer) GetEntries() []codec.LogEntry {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
-	entries := make([]codec.LogEntry, len(b.entries))
-	copy(entries, b.entries)
+	return b.parseEntries(b.data)
+}
+
+// GetData returns a copy of the raw buffer data.
+func (b *Buffer) GetData() []byte {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	data := make([]byte, len(b.data))
+	copy(data, b.data)
+	return data
+}
+
+// parseEntries parses log entries from raw data.
+func (b *Buffer) parseEntries(data []byte) []codec.LogEntry {
+	var entries []codec.LogEntry
+	buf := data
+
+	for len(buf) > 0 {
+		// Try to parse the current entry
+		entry := codec.LogEntry(buf)
+		sequenceID := entry.ID()
+		text := entry.Text()
+		actors := entry.Actors()
+
+		// Check if parsing was successful
+		if sequenceID == 0 && len(text) == 0 && len(actors) == 0 {
+			break // End of valid data
+		}
+
+		// Re-encode to get the exact size
+		reconstructed, err := codec.NewLogEntry(sequenceID, text, actors)
+		if err != nil {
+			break
+		}
+
+		entrySize := len(reconstructed)
+		if len(buf) < entrySize {
+			break
+		}
+
+		// Extract the entry
+		entries = append(entries, codec.LogEntry(buf[:entrySize]))
+		buf = buf[entrySize:]
+	}
+
 	return entries
 }
 
@@ -84,8 +131,9 @@ func (b *Buffer) GetActorEntries(actorID uint32, dayStart time.Time, from, to ti
 	fromSeq := timeToSequenceID(from.UTC(), dayStart)
 	toSeq := timeToSequenceID(to.UTC(), dayStart)
 
-	// Find entries with sequence IDs in range
-	for _, entry := range b.entries {
+	// Parse all entries and filter by actor and time range
+	entries := b.parseEntries(b.data)
+	for _, entry := range entries {
 		sequenceID := entry.ID()
 		if sequenceID >= fromSeq && sequenceID <= toSeq {
 			// Get actors using accessor
@@ -133,14 +181,14 @@ func (b *Buffer) GetAllActorBitmaps() map[uint32]*roaring.Bitmap {
 func (b *Buffer) Size() int {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	return len(b.entries)
+	return b.entryCount
 }
 
 // IsFull returns true if the buffer is at maximum capacity.
 func (b *Buffer) IsFull() bool {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	return len(b.entries) >= b.maxSize
+	return b.entryCount >= b.maxSize
 }
 
 // Clear clears the buffer and resets the chunk start time.
@@ -148,7 +196,8 @@ func (b *Buffer) Clear() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	b.entries = b.entries[:0]
+	b.data = b.data[:0]
+	b.entryCount = 0
 	b.actorBitmaps = make(map[uint32]*roaring.Bitmap)
 	b.chunkStart = time.Now()
 }
@@ -194,5 +243,5 @@ func timeToSequenceID(t time.Time, dayStart time.Time) uint32 {
 func (b *Buffer) IsEmpty() bool {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	return len(b.entries) == 0
+	return b.entryCount == 0
 }

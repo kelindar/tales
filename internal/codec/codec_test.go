@@ -103,3 +103,59 @@ func TestEdgeCases(t *testing.T) {
 		assert.Equal(t, uint32(0), shortEntry.UncompressedSize())
 	})
 }
+
+func TestCompression(t *testing.T) {
+	t.Run("CompressAndDecompress", func(t *testing.T) {
+		originalData := []byte("Hello, world! This is a test string for compression.")
+
+		// Compress
+		compressed, err := Compress(originalData)
+		require.NoError(t, err)
+		assert.NotEmpty(t, compressed)
+
+		// Decompress
+		decompressed, err := Decompress(compressed)
+		require.NoError(t, err)
+		assert.Equal(t, originalData, decompressed)
+	})
+
+	t.Run("EmptyData", func(t *testing.T) {
+		// Compress empty data
+		compressed, err := Compress([]byte{})
+		require.NoError(t, err)
+
+		// Decompress empty data
+		decompressed, err := Decompress(compressed)
+		require.NoError(t, err)
+		assert.Empty(t, decompressed)
+	})
+
+	t.Run("LargeData", func(t *testing.T) {
+		// Create large data
+		largeData := make([]byte, 10000)
+		for i := range largeData {
+			largeData[i] = byte(i % 256)
+		}
+
+		// Compress
+		compressed, err := Compress(largeData)
+		require.NoError(t, err)
+		assert.Less(t, len(compressed), len(largeData)) // Should be compressed
+
+		// Decompress
+		decompressed, err := Decompress(compressed)
+		require.NoError(t, err)
+		assert.Equal(t, largeData, decompressed)
+	})
+}
+
+func TestConstants(t *testing.T) {
+	t.Run("Sizes", func(t *testing.T) {
+		assert.Equal(t, 16, ChunkEntrySize)
+		assert.Equal(t, 20, IndexEntrySize)
+	})
+
+	t.Run("Magic", func(t *testing.T) {
+		assert.Equal(t, "TAIL", TailMagic)
+	})
+}
