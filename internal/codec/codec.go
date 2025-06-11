@@ -5,6 +5,7 @@ import (
 )
 
 const (
+	TailMagic      = "TAIL"
 	ChunkEntrySize = 16 // 8 bytes offset + 4 bytes compressed size + 4 bytes uncompressed size
 	IndexEntrySize = 20 // 4 bytes timestamp + 4 bytes actor_id + 8 bytes offset + 4 bytes size
 )
