@@ -50,8 +50,8 @@ func NewLogEntry(sequenceID uint32, text string, actors []uint32) (LogEntry, err
 	return LogEntry(buf), nil
 }
 
-// SequenceID extracts the sequence ID from a log entry
-func (e LogEntry) SequenceID() uint32 {
+// ID extracts the sequence ID from a log entry
+func (e LogEntry) ID() uint32 {
 	if len(e) < 4 {
 		return 0
 	}
@@ -119,16 +119,16 @@ func NewIndexEntry(timestamp, actorID uint32, offset uint64, size uint32) IndexE
 	return IndexEntry(buf)
 }
 
-// Timestamp extracts the timestamp from an index entry
-func (e IndexEntry) Timestamp() uint32 {
+// Time extracts the timestamp from an index entry
+func (e IndexEntry) Time() uint32 {
 	if len(e) < 4 {
 		return 0
 	}
 	return binary.LittleEndian.Uint32(e[0:4])
 }
 
-// ActorID extracts the actor ID from an index entry
-func (e IndexEntry) ActorID() uint32 {
+// Actor extracts the actor ID from an index entry
+func (e IndexEntry) Actor() uint32 {
 	if len(e) < 8 {
 		return 0
 	}

@@ -41,7 +41,7 @@ func (b *Buffer) Add(entry codec.LogEntry) bool {
 	b.entries = append(b.entries, entry)
 
 	// Get sequence ID and actors using accessors
-	sequenceID := entry.SequenceID()
+	sequenceID := entry.ID()
 	actors := entry.Actors()
 
 	// Update actor bitmaps
@@ -86,7 +86,7 @@ func (b *Buffer) GetActorEntries(actorID uint32, dayStart time.Time, from, to ti
 
 	// Find entries with sequence IDs in range
 	for _, entry := range b.entries {
-		sequenceID := entry.SequenceID()
+		sequenceID := entry.ID()
 		if sequenceID >= fromSeq && sequenceID <= toSeq {
 			// Get actors using accessor
 			actors := entry.Actors()

@@ -214,7 +214,7 @@ func (l *Logger) queryMemoryBuffer(actor uint32, from, to time.Time, yield func(
 	entries := l.buffer.GetActorEntries(actor, dayStart, from, to)
 
 	for _, entry := range entries {
-		sequenceID := entry.SequenceID()
+		sequenceID := entry.ID()
 		timestamp := reconstructTimestamp(sequenceID, dayStart)
 
 		// Get text using accessor

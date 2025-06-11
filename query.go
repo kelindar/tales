@@ -96,7 +96,7 @@ func (l *Logger) filterIndexEntries(entries []codec.IndexEntry, actor uint32, da
 	toSeconds := uint32(to.Sub(dayStart).Seconds())
 
 	for _, entry := range entries {
-		if entry.ActorID() == actor && entry.Timestamp() >= fromSeconds && entry.Timestamp() <= toSeconds {
+		if entry.Actor() == actor && entry.Time() >= fromSeconds && entry.Time() <= toSeconds {
 			filtered = append(filtered, entry)
 		}
 	}
@@ -204,7 +204,7 @@ func (l *Logger) queryLogChunk(logKey string, chunk codec.ChunkEntry, sequenceID
 
 	// Filter and yield matching entries
 	for _, entry := range entries {
-		sequenceID := entry.SequenceID()
+		sequenceID := entry.ID()
 		if sequenceIDs.Contains(sequenceID) {
 			timestamp := reconstructTimestamp(sequenceID, dayStart)
 			if timestamp.After(from) && timestamp.Before(to) {
@@ -226,7 +226,7 @@ func (l *Logger) parseLogEntriesFromData(data []byte) ([]codec.LogEntry, error) 
 	for len(buf) > 0 {
 		// Try to parse the current entry
 		entry := codec.LogEntry(buf)
-		sequenceID := entry.SequenceID()
+		sequenceID := entry.ID()
 		text := entry.Text()
 		actors := entry.Actors()
 

@@ -103,7 +103,6 @@ func (l *Logger) readTailMetadata(logKey string, dayStart time.Time) (*TailMetad
 		// If file doesn't exist, create new metadata
 		return &TailMetadata{
 			Magic:      [4]byte{'T', 'A', 'I', 'L'},
-			Version:    codec.FileVersion,
 			DayStart:   dayStart.UnixNano(),
 			ChunkCount: 0,
 			Chunks:     []codec.ChunkEntry{},

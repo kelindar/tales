@@ -14,7 +14,7 @@ func TestLogEntry(t *testing.T) {
 		require.NoError(t, err)
 
 		// Test accessors
-		assert.Equal(t, uint32(12345), entry.SequenceID())
+		assert.Equal(t, uint32(12345), entry.ID())
 		assert.Equal(t, "Hello, world!", entry.Text())
 		assert.Equal(t, []uint32{100, 200, 300}, entry.Actors())
 	})
@@ -23,7 +23,7 @@ func TestLogEntry(t *testing.T) {
 		entry, err := NewLogEntry(999, "No actors", []uint32{})
 		require.NoError(t, err)
 
-		assert.Equal(t, uint32(999), entry.SequenceID())
+		assert.Equal(t, uint32(999), entry.ID())
 		assert.Equal(t, "No actors", entry.Text())
 		assert.Empty(t, entry.Actors())
 	})
@@ -32,7 +32,7 @@ func TestLogEntry(t *testing.T) {
 		entry, err := NewLogEntry(555, "Hello 世界! 🌍", []uint32{42})
 		require.NoError(t, err)
 
-		assert.Equal(t, uint32(555), entry.SequenceID())
+		assert.Equal(t, uint32(555), entry.ID())
 		assert.Equal(t, "Hello 世界! 🌍", entry.Text())
 		assert.Equal(t, []uint32{42}, entry.Actors())
 	})
@@ -42,8 +42,8 @@ func TestIndexEntry(t *testing.T) {
 	t.Run("CreateAndAccess", func(t *testing.T) {
 		entry := NewIndexEntry(1234567890, 42, 9876543210, 1024)
 
-		assert.Equal(t, uint32(1234567890), entry.Timestamp())
-		assert.Equal(t, uint32(42), entry.ActorID())
+		assert.Equal(t, uint32(1234567890), entry.Time())
+		assert.Equal(t, uint32(42), entry.Actor())
 		assert.Equal(t, uint64(9876543210), entry.Offset())
 		assert.Equal(t, uint32(1024), entry.Size())
 	})
@@ -51,8 +51,8 @@ func TestIndexEntry(t *testing.T) {
 	t.Run("ZeroValues", func(t *testing.T) {
 		entry := NewIndexEntry(0, 0, 0, 0)
 
-		assert.Equal(t, uint32(0), entry.Timestamp())
-		assert.Equal(t, uint32(0), entry.ActorID())
+		assert.Equal(t, uint32(0), entry.Time())
+		assert.Equal(t, uint32(0), entry.Actor())
 		assert.Equal(t, uint64(0), entry.Offset())
 		assert.Equal(t, uint32(0), entry.Size())
 	})
@@ -81,7 +81,7 @@ func TestEdgeCases(t *testing.T) {
 		// Create a short byte slice that's too small to be a valid entry
 		shortEntry := LogEntry([]byte{1, 2, 3})
 
-		assert.Equal(t, uint32(0), shortEntry.SequenceID())
+		assert.Equal(t, uint32(0), shortEntry.ID())
 		assert.Equal(t, "", shortEntry.Text())
 		assert.Nil(t, shortEntry.Actors())
 	})
@@ -89,8 +89,8 @@ func TestEdgeCases(t *testing.T) {
 	t.Run("ShortIndexEntry", func(t *testing.T) {
 		shortEntry := IndexEntry([]byte{1, 2, 3})
 
-		assert.Equal(t, uint32(0), shortEntry.Timestamp())
-		assert.Equal(t, uint32(0), shortEntry.ActorID())
+		assert.Equal(t, uint32(0), shortEntry.Time())
+		assert.Equal(t, uint32(0), shortEntry.Actor())
 		assert.Equal(t, uint64(0), shortEntry.Offset())
 		assert.Equal(t, uint32(0), shortEntry.Size())
 	})

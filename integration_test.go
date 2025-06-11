@@ -147,7 +147,7 @@ func TestFileFormats(t *testing.T) {
 		require.NoError(t, err)
 
 		// Test accessors
-		assert.Equal(t, uint32(12345), entry.SequenceID())
+		assert.Equal(t, uint32(12345), entry.ID())
 		assert.Equal(t, "Test message", entry.Text())
 		assert.Equal(t, []uint32{100, 200, 300}, entry.Actors())
 	})

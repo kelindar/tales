@@ -99,7 +99,7 @@ func decompressLogEntries(compressed []byte) ([]codec.LogEntry, error) {
 	for len(buf) > 0 {
 		// Parse the current entry to determine its size
 		entry := codec.LogEntry(buf)
-		sequenceID := entry.SequenceID()
+		sequenceID := entry.ID()
 		text := entry.Text()
 		actors := entry.Actors()
 
