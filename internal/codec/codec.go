@@ -1,9 +1,7 @@
 package codec
 
 import (
-	"bytes"
 	"encoding/binary"
-	"fmt"
 )
 
 const (
@@ -30,36 +28,33 @@ type TailMetadata []byte
 
 // NewLogEntry creates a new log entry from components
 func NewLogEntry(sequenceID uint32, text string, actors []uint32) (LogEntry, error) {
-	buf := &bytes.Buffer{}
+	// Pre-allocate with exact size
+	size := 4 + // sequence ID
+		2 + // text length (uint16)
+		2 + // actor count (uint16)
+		len(text) + // text bytes
+		len(actors)*4 // actor IDs (4 bytes each)
+
+	buf := make([]byte, 0, size)
 
 	// Write sequence ID (4 bytes)
-	if err := binary.Write(buf, binary.LittleEndian, sequenceID); err != nil {
-		return nil, fmt.Errorf("failed to write sequence ID: %w", err)
-	}
+	buf = binary.LittleEndian.AppendUint32(buf, sequenceID)
 
-	// Write text length (varint)
-	if err := writeVarint(buf, uint64(len(text))); err != nil {
-		return nil, fmt.Errorf("failed to write text length: %w", err)
-	}
+	// Write text length (uint16)
+	buf = binary.LittleEndian.AppendUint16(buf, uint16(len(text)))
 
-	// Write actor count (varint)
-	if err := writeVarint(buf, uint64(len(actors))); err != nil {
-		return nil, fmt.Errorf("failed to write actor count: %w", err)
-	}
+	// Write actor count (uint16)
+	buf = binary.LittleEndian.AppendUint16(buf, uint16(len(actors)))
 
 	// Write text (UTF-8)
-	if _, err := buf.WriteString(text); err != nil {
-		return nil, fmt.Errorf("failed to write text: %w", err)
-	}
+	buf = append(buf, text...)
 
 	// Write actor IDs (4 bytes each)
 	for _, actor := range actors {
-		if err := binary.Write(buf, binary.LittleEndian, actor); err != nil {
-			return nil, fmt.Errorf("failed to write actor ID: %w", err)
-		}
+		buf = binary.LittleEndian.AppendUint32(buf, actor)
 	}
 
-	return LogEntry(buf.Bytes()), nil
+	return LogEntry(buf), nil
 }
 
 // SequenceID extracts the sequence ID from a log entry
@@ -72,64 +67,48 @@ func (e LogEntry) SequenceID() uint32 {
 
 // Text extracts the text from a log entry
 func (e LogEntry) Text() string {
-	if len(e) < 4 {
+	if len(e) < 8 { // 4 bytes sequence ID + 2 bytes text length + 2 bytes actor count
 		return ""
 	}
 
-	pos := 4 // Skip sequence ID
+	// Read text length (uint16)
+	textLen := binary.LittleEndian.Uint16(e[4:6])
 
-	// Read text length (varint)
-	textLen, consumed := readVarintFromBytes(e[pos:])
-	if consumed == 0 {
+	// Text starts after sequence ID (4) + text length (2) + actor count (2)
+	textStart := 8
+	textEnd := textStart + int(textLen)
+
+	// Check bounds
+	if textEnd > len(e) {
 		return ""
 	}
-	pos += consumed
 
-	// Skip actor count (varint)
-	_, consumed = readVarintFromBytes(e[pos:])
-	if consumed == 0 {
-		return ""
-	}
-	pos += consumed
-
-	// Read text (UTF-8)
-	if pos+int(textLen) > len(e) {
-		return ""
-	}
-	return string(e[pos : pos+int(textLen)])
+	return string(e[textStart:textEnd])
 }
 
 // Actors extracts the actor IDs from a log entry
 func (e LogEntry) Actors() []uint32 {
-	if len(e) < 4 {
+	if len(e) < 8 { // 4 bytes sequence ID + 2 bytes text length + 2 bytes actor count
 		return nil
 	}
 
-	pos := 4 // Skip sequence ID
+	// Read text length and actor count (uint16 each)
+	textLen := binary.LittleEndian.Uint16(e[4:6])
+	actorCount := binary.LittleEndian.Uint16(e[6:8])
 
-	// Read text length (varint)
-	textLen, consumed := readVarintFromBytes(e[pos:])
-	if consumed == 0 {
+	// Actors start after sequence ID (4) + text length (2) + actor count (2) + text
+	actorsStart := 8 + int(textLen)
+	actorsEnd := actorsStart + int(actorCount)*4
+
+	// Check bounds
+	if actorsEnd > len(e) {
 		return nil
 	}
-	pos += consumed
-
-	// Read actor count (varint)
-	actorCount, consumed := readVarintFromBytes(e[pos:])
-	if consumed == 0 {
-		return nil
-	}
-	pos += consumed
-
-	// Skip text
-	pos += int(textLen)
 
 	// Read actor IDs (4 bytes each)
-	if pos+int(actorCount)*4 > len(e) {
-		return nil
-	}
 	actors := make([]uint32, actorCount)
-	for i := uint64(0); i < actorCount; i++ {
+	pos := actorsStart
+	for i := uint16(0); i < actorCount; i++ {
 		actors[i] = binary.LittleEndian.Uint32(e[pos : pos+4])
 		pos += 4
 	}
@@ -210,37 +189,4 @@ func (e ChunkEntry) UncompressedSize() uint32 {
 		return 0
 	}
 	return binary.LittleEndian.Uint32(e[12:16])
-}
-
-// writeVarint writes a varint to the buffer
-func writeVarint(buf *bytes.Buffer, value uint64) error {
-	for value >= 0x80 {
-		if err := buf.WriteByte(byte(value) | 0x80); err != nil {
-			return err
-		}
-		value >>= 7
-	}
-
-	return buf.WriteByte(byte(value))
-}
-
-// readVarintFromBytes reads a varint from a byte slice and returns the value and bytes consumed
-func readVarintFromBytes(data []byte) (uint64, int) {
-	var result uint64
-	var shift uint
-	var consumed int
-
-	for i, b := range data {
-		result |= uint64(b&0x7F) << shift
-		consumed = i + 1
-		if b&0x80 == 0 {
-			return result, consumed
-		}
-		shift += 7
-		if shift >= 64 {
-			return 0, 0 // Invalid varint
-		}
-	}
-
-	return 0, 0 // Incomplete varint
 }

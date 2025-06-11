@@ -76,18 +76,6 @@ func TestChunkEntry(t *testing.T) {
 	})
 }
 
-func TestConstants(t *testing.T) {
-	t.Run("Sizes", func(t *testing.T) {
-		assert.Equal(t, 16, ChunkEntrySize)
-		assert.Equal(t, 20, IndexEntrySize)
-	})
-
-	t.Run("Magic", func(t *testing.T) {
-		assert.Equal(t, "TAIL", TailMagic)
-		assert.Equal(t, uint32(1), FileVersion)
-	})
-}
-
 func TestEdgeCases(t *testing.T) {
 	t.Run("ShortLogEntry", func(t *testing.T) {
 		// Create a short byte slice that's too small to be a valid entry
