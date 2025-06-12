@@ -178,7 +178,7 @@ func (l *Logger) queryLogChunk(ctx context.Context, logKey string, chunk codec.C
 	for _, entry := range entries {
 		sequenceID := entry.ID()
 		if sequenceIDs.Contains(sequenceID) {
-			timestamp := reconstructTimestamp(sequenceID, dayStart)
+			timestamp := ReconstructTimestamp(sequenceID, dayStart)
 			if timestamp.After(from) && timestamp.Before(to) {
 				if !yield(timestamp, entry.Text()) {
 					return false

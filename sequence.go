@@ -5,32 +5,54 @@ import (
 	"time"
 )
 
-// generateSequenceID creates a unique sequence ID for the given timestamp.
-// Format: (minutes_from_day_start << 20) | atomic_counter
-// - High 12 bits: minutes from day start (0-1439, fits in 11 bits, using 12 for safety)
-// - Low 20 bits: atomic counter within that minute (0-1048575)
-// This guarantees lexicographic ordering and uniqueness.
-func generateSequenceID(dayStart time.Time, now time.Time, atomicCounter *uint32) uint32 {
-	minutesFromDayStart := uint32(now.Sub(dayStart).Minutes())
+const (
+	// Sequence ID format constants
+	minuteBits  = 12                     // High 12 bits for minutes (0-1439)
+	counterBits = 20                     // Low 20 bits for counter (0-1048575)
+	counterMask = (1 << counterBits) - 1 // 0xFFFFF
+	maxMinutes  = 1439                   // Maximum minutes in a day (24*60-1)
+	maxCounter  = (1 << counterBits) - 1 // Maximum counter value
+)
 
-	// Debug: print the calculation (remove this in production)
-	// fmt.Printf("DEBUG: generateSequenceID - dayStart=%s, now=%s, minutes=%d\n",
-	//     dayStart.Format(time.RFC3339), now.Format(time.RFC3339), minutesFromDayStart)
-
-	// Ensure we don't exceed 12 bits for minutes (1440 minutes in a day)
-	if minutesFromDayStart > 1439 {
-		minutesFromDayStart = 1439
-	}
-
-	// Increment atomic counter and wrap at 1048576 (20 bits)
-	counter := atomic.AddUint32(atomicCounter, 1) & 0xFFFFF
-
-	return (minutesFromDayStart << 20) | counter
+// SequenceGenerator generates unique sequence IDs for a specific day.
+// Sequence ID Format: (minutes_from_day_start << 20) | atomic_counter
+type SequenceGenerator struct {
+	dayStart time.Time     // Start of the current day (UTC)
+	counter  atomic.Uint32 // Atomic counter for uniqueness
 }
 
-// reconstructTimestamp reconstructs a timestamp from a sequence ID and day start.
-func reconstructTimestamp(sequenceID uint32, dayStart time.Time) time.Time {
-	minutes := sequenceID >> 20
+// NewSequenceGenerator creates a new sequence generator for the given day.
+func NewSequenceGenerator(dayStart time.Time) *SequenceGenerator {
+	return &SequenceGenerator{
+		dayStart: getDayStart(dayStart),
+	}
+}
+
+// Generate creates a unique sequence ID for the given timestamp.
+func (sg *SequenceGenerator) Generate(now time.Time) uint32 {
+	// Check if we need to reset for a new day
+	if getDayStart(now) != sg.dayStart {
+		sg.dayStart = getDayStart(now)
+		sg.counter.Store(0)
+	}
+
+	minutesFromDayStart := uint32(now.Sub(sg.dayStart).Minutes())
+	if minutesFromDayStart > maxMinutes {
+		minutesFromDayStart = maxMinutes
+	}
+
+	counter := sg.counter.Add(1) & counterMask
+	return (minutesFromDayStart << counterBits) | counter
+}
+
+// DayStart returns the current day start time.
+func (sg *SequenceGenerator) DayStart() time.Time {
+	return sg.dayStart
+}
+
+// ReconstructTimestamp reconstructs a timestamp from a sequence ID and day start.
+func ReconstructTimestamp(sequenceID uint32, dayStart time.Time) time.Time {
+	minutes := sequenceID >> counterBits
 	return dayStart.Add(time.Duration(minutes) * time.Minute)
 }
 
@@ -43,9 +65,4 @@ func getDayStart(t time.Time) time.Time {
 // getDateString returns the date string in YYYY-MM-DD format for S3 key prefixes.
 func getDateString(t time.Time) string {
 	return t.UTC().Format("2006-01-02")
-}
-
-// isNewDay checks if the current time represents a new day compared to the day start.
-func isNewDay(dayStart time.Time, now time.Time) bool {
-	return getDayStart(now) != dayStart
 }

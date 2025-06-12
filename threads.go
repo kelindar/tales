@@ -29,7 +29,7 @@ type queryCmd struct {
 }
 
 // flushCmd represents a command to flush the buffer.
-type flushCmd struct{
+type flushCmd struct {
 	done chan struct{}
 }
 
@@ -57,8 +57,6 @@ func New(config Config) (*Logger, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create codec: %w", err)
 	}
-
-
 
 	// Create S3 client
 	var s3Client s3.Client
@@ -112,7 +110,6 @@ func (l *Logger) Query(actor uint32, from, to time.Time) iter.Seq2[time.Time, st
 		// Query memory buffer first (most recent data)
 		l.queryMemoryBuffer(actor, from, to, yield)
 
-
 		// Query S3 for historical data
 		l.queryS3Historical(context.Background(), actor, from, to, yield)
 	}
@@ -142,8 +139,8 @@ func (l *Logger) run(ctx context.Context) {
 	ticker := time.NewTicker(l.config.ChunkInterval)
 	defer ticker.Stop()
 
-	dayStart := getDayStart(time.Now().UTC())
-	var atomicCounter uint32
+	// Initialize sequence generator for the current day
+	seqGen := NewSequenceGenerator(time.Now().UTC())
 
 	for {
 		select {
@@ -156,13 +153,13 @@ func (l *Logger) run(ctx context.Context) {
 			switch c := cmd.(type) {
 			case logCmd:
 				now := time.Now().UTC()
-				if isNewDay(dayStart, now) {
+
+				// Check if we need to flush for a new day
+				if getDayStart(now) != seqGen.DayStart() {
 					l.flushBuffer(buf)
-					dayStart = getDayStart(now)
-					atomic.StoreUint32(&atomicCounter, 0)
 				}
 
-				sequenceID := generateSequenceID(dayStart, now, &atomicCounter)
+				sequenceID := seqGen.Generate(now)
 				entry, _ := codec.NewLogEntry(sequenceID, c.text, c.actors)
 				if !buf.Add(entry) {
 					l.flushBuffer(buf)
@@ -170,7 +167,7 @@ func (l *Logger) run(ctx context.Context) {
 				}
 
 			case queryCmd:
-				results := buf.Query(c.actor, dayStart, c.from, c.to)
+				results := buf.Query(c.actor, seqGen.DayStart(), c.from, c.to)
 				c.ret <- results
 
 			case flushCmd:
@@ -198,5 +195,3 @@ func (l *Logger) queryMemoryBuffer(actor uint32, from, to time.Time, yield func(
 		}
 	}
 }
-
-
