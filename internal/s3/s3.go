@@ -26,8 +26,7 @@ type Config struct {
 
 // Client interface abstracts S3 operations for easier testing and mocking
 type Client interface {
-       UploadData(ctx context.Context, key string, data []byte) error
-       AppendData(ctx context.Context, key string, data []byte) error
+	AppendData(ctx context.Context, key string, data []byte) error
 	DownloadData(ctx context.Context, key string) ([]byte, error)
 	DownloadRange(ctx context.Context, key string, start, end int64) ([]byte, error)
 	DownloadTail(ctx context.Context, key string, tailSize int64) ([]byte, error)
@@ -79,31 +78,10 @@ func NewClient(ctx context.Context, s3Config Config) (Client, error) {
 
 // buildKey constructs an S3 key with the configured prefix.
 func (c *S3Client) buildKey(key string) string {
-        if c.prefix == "" {
-                return key
-        }
-        return strings.TrimSuffix(c.prefix, "/") + "/" + key
-}
-
-// UploadData uploads data to S3 with retry logic.
-func (c *S3Client) UploadData(ctx context.Context, key string, data []byte) error {
-       fullKey := c.buildKey(key)
-
-       for attempt := 0; attempt <= c.retryAttempts; attempt++ {
-               _, err := c.client.PutObject(ctx, &s3.PutObjectInput{
-                       Bucket: aws.String(c.bucket),
-                       Key:    aws.String(fullKey),
-                       Body:   bytes.NewReader(data),
-               })
-               if err == nil {
-                       return nil
-               }
-               if attempt == c.retryAttempts {
-                       return ErrS3Operation{Operation: "upload", Err: err}
-               }
-       }
-
-       return nil
+	if c.prefix == "" {
+		return key
+	}
+	return strings.TrimSuffix(c.prefix, "/") + "/" + key
 }
 
 // AppendData appends data to an existing S3 object using a multipart upload.
