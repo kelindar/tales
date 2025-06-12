@@ -7,7 +7,7 @@ import (
 const (
 	TailMagic      = "TAIL"
 	ChunkEntrySize = 16 // 8 bytes offset + 4 bytes compressed size + 4 bytes uncompressed size
-	IndexEntrySize = 20 // 4 bytes timestamp + 4 bytes actor_id + 8 bytes offset + 4 bytes size
+	IndexEntrySize = 24 // 4 bytes timestamp + 4 bytes actor_id + 8 bytes offset + 4 bytes compressed size + 4 bytes uncompressed size
 )
 
 // LogEntry represents a single log entry as raw bytes
@@ -110,12 +110,13 @@ func (e LogEntry) Actors() []uint32 {
 }
 
 // NewIndexEntry creates a new index entry
-func NewIndexEntry(timestamp, actorID uint32, offset uint64, size uint32) IndexEntry {
+func NewIndexEntry(timestamp, actorID uint32, offset uint64, compressedSize, uncompressedSize uint32) IndexEntry {
 	buf := make([]byte, IndexEntrySize)
 	binary.LittleEndian.PutUint32(buf[0:4], timestamp)
 	binary.LittleEndian.PutUint32(buf[4:8], actorID)
 	binary.LittleEndian.PutUint64(buf[8:16], offset)
-	binary.LittleEndian.PutUint32(buf[16:20], size)
+	binary.LittleEndian.PutUint32(buf[16:20], compressedSize)
+	binary.LittleEndian.PutUint32(buf[20:24], uncompressedSize)
 	return IndexEntry(buf)
 }
 
@@ -143,12 +144,20 @@ func (e IndexEntry) Offset() uint64 {
 	return binary.LittleEndian.Uint64(e[8:16])
 }
 
-// Size extracts the size from an index entry
-func (e IndexEntry) Size() uint32 {
+// CompressedSize extracts the compressed size from an index entry
+func (e IndexEntry) CompressedSize() uint32 {
 	if len(e) < 20 {
 		return 0
 	}
 	return binary.LittleEndian.Uint32(e[16:20])
+}
+
+// UncompressedSize extracts the uncompressed size from an index entry
+func (e IndexEntry) UncompressedSize() uint32 {
+	if len(e) < 24 {
+		return 0
+	}
+	return binary.LittleEndian.Uint32(e[20:24])
 }
 
 // NewChunkEntry creates a new chunk entry

@@ -40,21 +40,23 @@ func TestLogEntry(t *testing.T) {
 
 func TestIndexEntry(t *testing.T) {
 	t.Run("CreateAndAccess", func(t *testing.T) {
-		entry := NewIndexEntry(1234567890, 42, 9876543210, 1024)
+		entry := NewIndexEntry(1234567890, 42, 9876543210, 1024, 2048)
 
 		assert.Equal(t, uint32(1234567890), entry.Time())
 		assert.Equal(t, uint32(42), entry.Actor())
 		assert.Equal(t, uint64(9876543210), entry.Offset())
-		assert.Equal(t, uint32(1024), entry.Size())
+		assert.Equal(t, uint32(1024), entry.CompressedSize())
+		assert.Equal(t, uint32(2048), entry.UncompressedSize())
 	})
 
 	t.Run("ZeroValues", func(t *testing.T) {
-		entry := NewIndexEntry(0, 0, 0, 0)
+		entry := NewIndexEntry(0, 0, 0, 0, 0)
 
 		assert.Equal(t, uint32(0), entry.Time())
 		assert.Equal(t, uint32(0), entry.Actor())
 		assert.Equal(t, uint64(0), entry.Offset())
-		assert.Equal(t, uint32(0), entry.Size())
+		assert.Equal(t, uint32(0), entry.CompressedSize())
+		assert.Equal(t, uint32(0), entry.UncompressedSize())
 	})
 }
 
@@ -92,7 +94,8 @@ func TestEdgeCases(t *testing.T) {
 		assert.Equal(t, uint32(0), shortEntry.Time())
 		assert.Equal(t, uint32(0), shortEntry.Actor())
 		assert.Equal(t, uint64(0), shortEntry.Offset())
-		assert.Equal(t, uint32(0), shortEntry.Size())
+		assert.Equal(t, uint32(0), shortEntry.CompressedSize())
+		assert.Equal(t, uint32(0), shortEntry.UncompressedSize())
 	})
 
 	t.Run("ShortChunkEntry", func(t *testing.T) {
@@ -164,7 +167,7 @@ func TestCompression(t *testing.T) {
 func TestConstants(t *testing.T) {
 	t.Run("Sizes", func(t *testing.T) {
 		assert.Equal(t, 16, ChunkEntrySize)
-		assert.Equal(t, 20, IndexEntrySize)
+		assert.Equal(t, 24, IndexEntrySize)
 	})
 
 	t.Run("Magic", func(t *testing.T) {

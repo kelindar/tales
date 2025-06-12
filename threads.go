@@ -59,7 +59,7 @@ func New(config Config) (*Logger, error) {
 	}
 
 	// Create buffer
-	buffer := NewBuffer(config.BufferSize)
+	buffer := NewBuffer(config.BufferSize, codecInstance)
 
 	// Initialize day start (ensure UTC)
 	dayStart := getDayStart(time.Now().UTC())

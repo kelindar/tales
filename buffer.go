@@ -11,6 +11,7 @@ import (
 // Buffer represents the in-memory buffer for the current chunk.
 type Buffer struct {
 	mu           sync.RWMutex
+	codec        *codec.Codec               // Codec for compression
 	data         []byte                     // Raw concatenated log entries
 	actorBitmaps map[uint32]*roaring.Bitmap // Actor ID -> sequence IDs bitmap
 	entryCount   int                        // Number of entries in buffer
@@ -19,8 +20,9 @@ type Buffer struct {
 }
 
 // NewBuffer creates a new buffer with the specified maximum size.
-func NewBuffer(maxSize int) *Buffer {
+func NewBuffer(maxSize int, codec *codec.Codec) *Buffer {
 	return &Buffer{
+		codec:        codec,
 		data:         make([]byte, 0, maxSize*100), // Estimate ~100 bytes per entry
 		actorBitmaps: make(map[uint32]*roaring.Bitmap),
 		entryCount:   0,
@@ -58,24 +60,6 @@ func (b *Buffer) Add(entry codec.LogEntry) bool {
 	}
 
 	return true
-}
-
-// GetEntries returns all entries in the buffer by parsing the raw data.
-func (b *Buffer) GetEntries() []codec.LogEntry {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-
-	return b.parseEntries(b.data)
-}
-
-// GetData returns a copy of the raw buffer data.
-func (b *Buffer) GetData() []byte {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-
-	data := make([]byte, len(b.data))
-	copy(data, b.data)
-	return data
 }
 
 // parseEntries parses log entries from raw data.
@@ -165,18 +149,6 @@ func (b *Buffer) GetActorBitmap(actorID uint32) *roaring.Bitmap {
 	return bitmap.Clone()
 }
 
-// GetAllActorBitmaps returns copies of all actor bitmaps.
-func (b *Buffer) GetAllActorBitmaps() map[uint32]*roaring.Bitmap {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-
-	result := make(map[uint32]*roaring.Bitmap)
-	for actorID, bitmap := range b.actorBitmaps {
-		result[actorID] = bitmap.Clone()
-	}
-	return result
-}
-
 // Size returns the current number of entries in the buffer.
 func (b *Buffer) Size() int {
 	b.mu.RLock()
@@ -184,48 +156,68 @@ func (b *Buffer) Size() int {
 	return b.entryCount
 }
 
-// IsFull returns true if the buffer is at maximum capacity.
-func (b *Buffer) IsFull() bool {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return b.entryCount >= b.maxSize
+// ActorBitmap represents a compressed actor bitmap.
+type ActorBitmap struct {
+	ActorID          uint32
+	UncompressedSize uint32
+	CompressedSize   uint32
+	CompressedData   []byte
 }
 
-// Clear clears the buffer and resets the chunk start time.
-func (b *Buffer) Clear() {
+// FlushResult represents the data returned by Buffer.Flush.
+type FlushResult struct {
+	Data         []byte
+	ActorBitmaps []ActorBitmap
+}
+
+// Flush atomically extracts the current buffer contents and resets the buffer.
+// It returns a deep-copied snapshot so the caller owns the returned slices/maps
+// without needing additional synchronization.
+func (b *Buffer) Flush() (FlushResult, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	// Copy raw data
+	dataCopy := make([]byte, len(b.data))
+	copy(dataCopy, b.data)
+
+	// Compress bitmaps
+	compressedBitmaps := make([]ActorBitmap, 0, len(b.actorBitmaps))
+	for actorID, bm := range b.actorBitmaps {
+		// Serialize bitmap
+		bitmapData, err := bm.ToBytes()
+		if err != nil {
+			return FlushResult{}, err
+		}
+
+		// Compress bitmap
+		compressedData, err := b.codec.Compress(bitmapData)
+		if err != nil {
+			return FlushResult{}, err
+		}
+
+		compressedBitmaps = append(compressedBitmaps, ActorBitmap{
+			ActorID:          actorID,
+			UncompressedSize: uint32(len(bitmapData)),
+			CompressedSize:   uint32(len(compressedData)),
+			CompressedData:   compressedData,
+		})
+	}
+
+	// Reset buffer state
+	b.reset()
+
+	return FlushResult{Data: dataCopy, ActorBitmaps: compressedBitmaps}, nil
+}
+
+// reset resets the buffer's internal state.
+func (b *Buffer) reset() {
 	b.data = b.data[:0]
 	b.entryCount = 0
-	b.actorBitmaps = make(map[uint32]*roaring.Bitmap)
-	b.chunkStart = time.Now()
-}
-
-// GetChunkStart returns the start time of the current chunk.
-func (b *Buffer) GetChunkStart() time.Time {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return b.chunkStart
-}
-
-// SetChunkStart sets the start time of the current chunk.
-func (b *Buffer) SetChunkStart(t time.Time) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.chunkStart = t
-}
-
-// GetActorIDs returns all actor IDs that have entries in the buffer.
-func (b *Buffer) GetActorIDs() []uint32 {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-
-	actorIDs := make([]uint32, 0, len(b.actorBitmaps))
-	for actorID := range b.actorBitmaps {
-		actorIDs = append(actorIDs, actorID)
+	for _, bm := range b.actorBitmaps {
+		bm.Clear()
 	}
-	return actorIDs
+	b.chunkStart = time.Now()
 }
 
 // timeToSequenceID converts a time to a sequence ID for comparison.
@@ -237,11 +229,4 @@ func timeToSequenceID(t time.Time, dayStart time.Time) uint32 {
 	}
 	// Use 0 for the counter part since we're doing range comparisons
 	return minutesFromDayStart << 20
-}
-
-// IsEmpty returns true if the buffer contains no entries.
-func (b *Buffer) IsEmpty() bool {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return b.entryCount == 0
 }

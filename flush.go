@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/RoaringBitmap/roaring/v2"
 	"github.com/kelindar/threads/internal/codec"
 )
 
@@ -25,13 +24,16 @@ func (l *Logger) flushBuffer() error {
 	l.flushMu.Lock()
 	defer l.flushMu.Unlock()
 
-	if l.buffer.IsEmpty() {
+	// Atomically extract buffer contents
+	res, err := l.buffer.Flush()
+	if err != nil {
+		return fmt.Errorf("failed to flush buffer: %w", err)
+	}
+	if len(res.Data) == 0 {
 		return nil
 	}
 
-	// Get current buffer data
-	entriesData := l.buffer.GetData()
-	actorBitmaps := l.buffer.GetAllActorBitmaps()
+	entriesData := res.Data
 
 	l.mu.RLock()
 	dayStart := l.dayStart
@@ -66,7 +68,7 @@ func (l *Logger) flushBuffer() error {
 	newChunk := codec.NewChunkEntry(chunkOffset, uint32(len(compressedEntries)), uint32(len(entriesData)))
 
 	// 3. Append compressed bitmaps and build index entries
-	indexEntries, err := l.appendBitmaps(bitmapKey, actorBitmaps, dayStart)
+	indexEntries, err := l.appendBitmaps(bitmapKey, res.ActorBitmaps, dayStart)
 	if err != nil {
 		return fmt.Errorf("failed to append bitmaps: %w", err)
 	}
@@ -88,9 +90,6 @@ func (l *Logger) flushBuffer() error {
 	if err := l.updateTailMetadata(logKey, tailMetadata); err != nil {
 		return fmt.Errorf("failed to update tail metadata: %w", err)
 	}
-
-	// 7. Clear buffer
-	l.buffer.Clear()
 
 	return nil
 }
@@ -180,7 +179,7 @@ func (l *Logger) decodeTailMetadata(data []byte) (*TailMetadata, error) {
 }
 
 // appendBitmaps appends compressed bitmaps to the bitmap file and returns index entries.
-func (l *Logger) appendBitmaps(bitmapKey string, actorBitmaps map[uint32]*roaring.Bitmap, dayStart time.Time) ([]codec.IndexEntry, error) {
+func (l *Logger) appendBitmaps(bitmapKey string, actorBitmaps []ActorBitmap, dayStart time.Time) ([]codec.IndexEntry, error) {
 	var indexEntries []codec.IndexEntry
 
 	// Get current bitmap file size to calculate offsets
@@ -194,29 +193,24 @@ func (l *Logger) appendBitmaps(bitmapKey string, actorBitmaps map[uint32]*roarin
 	timestamp := uint32(time.Now().Sub(dayStart).Seconds())
 
 	// Process each actor bitmap
-	for actorID, bitmap := range actorBitmaps {
-		// Serialize bitmap
-		bitmapData, err := bitmap.ToBytes()
-		if err != nil {
-			return nil, fmt.Errorf("failed to serialize bitmap for actor %d: %w", actorID, err)
-		}
-
-		// Compress bitmap
-		compressedBitmap, err := l.codec.Compress(bitmapData)
-		if err != nil {
-			return nil, fmt.Errorf("failed to compress bitmap for actor %d: %w", actorID, err)
-		}
-
-		// Append to bitmap file
-		if err := l.s3Client.AppendData(l.ctx, bitmapKey, compressedBitmap); err != nil {
-			return nil, fmt.Errorf("failed to append bitmap for actor %d: %w", actorID, err)
+	for _, ab := range actorBitmaps {
+		// Append compressed data to S3
+		if err := l.s3Client.AppendData(l.ctx, bitmapKey, ab.CompressedData); err != nil {
+			return nil, fmt.Errorf("failed to append bitmap for actor %d: %w", ab.ActorID, err)
 		}
 
 		// Create index entry
-		indexEntry := codec.NewIndexEntry(timestamp, actorID, currentOffset, uint32(len(compressedBitmap)))
+		indexEntry := codec.NewIndexEntry(
+			ab.ActorID,
+			timestamp,
+			currentOffset,
+			ab.CompressedSize,
+			ab.UncompressedSize,
+		)
 		indexEntries = append(indexEntries, indexEntry)
 
-		currentOffset += uint64(len(compressedBitmap))
+		// Update offset for next bitmap
+		currentOffset += uint64(ab.CompressedSize)
 	}
 
 	return indexEntries, nil

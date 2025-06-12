@@ -110,7 +110,7 @@ func (l *Logger) downloadAndMergeBitmaps(bitmapKey string, entries []codec.Index
 
 	for _, entry := range entries {
 		// Download bitmap chunk using byte range
-		compressedData, err := l.s3Client.DownloadRange(l.ctx, bitmapKey, int64(entry.Offset()), int64(entry.Offset()+uint64(entry.Size())-1))
+		compressedData, err := l.s3Client.DownloadRange(l.ctx, bitmapKey, int64(entry.Offset()), int64(entry.Offset()+uint64(entry.CompressedSize())-1))
 		if err != nil {
 			continue // Skip failed downloads
 		}
