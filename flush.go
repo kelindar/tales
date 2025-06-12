@@ -112,10 +112,8 @@ func (l *Logger) flushBuffer(buf *buffer.Buffer) error {
 		return err
 	}
 
-	return l.s3Client.UploadData(ctx, metaKey, encodedTail)
+	return l.s3Client.AppendData(ctx, metaKey, encodedTail)
 }
-
-
 
 // decodeTailMetadata decodes tail metadata from binary format.
 func decodeTailMetadata(data []byte) (*TailMetadata, error) {

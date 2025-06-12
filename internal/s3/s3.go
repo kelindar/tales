@@ -26,7 +26,6 @@ type Config struct {
 
 // Client interface abstracts S3 operations for easier testing and mocking
 type Client interface {
-	UploadData(ctx context.Context, key string, data []byte) error
 	AppendData(ctx context.Context, key string, data []byte) error
 	DownloadData(ctx context.Context, key string) ([]byte, error)
 	DownloadRange(ctx context.Context, key string, start, end int64) ([]byte, error)
@@ -85,47 +84,106 @@ func (c *S3Client) buildKey(key string) string {
 	return strings.TrimSuffix(c.prefix, "/") + "/" + key
 }
 
-// UploadData uploads data to S3 with retry logic.
-func (c *S3Client) UploadData(ctx context.Context, key string, data []byte) error {
+// AppendData appends data to an existing S3 object using a multipart upload.
+// If the object does not exist it will be created.
+func (c *S3Client) AppendData(ctx context.Context, key string, data []byte) error {
 	fullKey := c.buildKey(key)
 
-	for attempt := 0; attempt <= c.retryAttempts; attempt++ {
-		_, err := c.client.PutObject(ctx, &s3.PutObjectInput{
-			Bucket: aws.String(c.bucket),
-			Key:    aws.String(fullKey),
-			Body:   bytes.NewReader(data),
-		})
-
-		if err == nil {
-			return nil
-		}
-
-		if attempt == c.retryAttempts {
-			return ErrS3Operation{Operation: "upload", Err: err}
-		}
-	}
-
-	return nil
-}
-
-// AppendData appends data to an existing S3 object by downloading, concatenating, and re-uploading.
-func (c *S3Client) AppendData(ctx context.Context, key string, data []byte) error {
-	// Try to download existing data
-	existing, err := c.DownloadData(ctx, key)
+	exists, err := c.ObjectExists(ctx, key)
 	if err != nil {
-		// If object doesn't exist, create it with the new data
-		var nsk *types.NoSuchKey
-		if errors.As(err, &nsk) {
-			return c.UploadData(ctx, key, data)
-		}
 		return err
 	}
 
-	// Concatenate existing and new data
-	combined := append(existing, data...)
+	// If the object doesn't exist simply create it
+	if !exists {
+		for attempt := 0; attempt <= c.retryAttempts; attempt++ {
+			_, err := c.client.PutObject(ctx, &s3.PutObjectInput{
+				Bucket: aws.String(c.bucket),
+				Key:    aws.String(fullKey),
+				Body:   bytes.NewReader(data),
+			})
+			if err == nil {
+				return nil
+			}
+			if attempt == c.retryAttempts {
+				return ErrS3Operation{Operation: "put object", Err: err}
+			}
+		}
+		return nil
+	}
 
-	// Upload the combined data
-	return c.UploadData(ctx, key, combined)
+	// Start multipart upload
+	var uploadID string
+	for attempt := 0; attempt <= c.retryAttempts; attempt++ {
+		resp, err := c.client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
+			Bucket: aws.String(c.bucket),
+			Key:    aws.String(fullKey),
+		})
+		if err == nil {
+			uploadID = aws.ToString(resp.UploadId)
+			break
+		}
+		if attempt == c.retryAttempts {
+			return ErrS3Operation{Operation: "create multipart upload", Err: err}
+		}
+	}
+
+	completed := make([]types.CompletedPart, 0, 2)
+
+	// Copy existing object as first part
+	copySource := fmt.Sprintf("%s/%s", c.bucket, fullKey)
+	for attempt := 0; attempt <= c.retryAttempts; attempt++ {
+		resp, err := c.client.UploadPartCopy(ctx, &s3.UploadPartCopyInput{
+			Bucket:     aws.String(c.bucket),
+			Key:        aws.String(fullKey),
+			PartNumber: aws.Int32(1),
+			UploadId:   aws.String(uploadID),
+			CopySource: aws.String(copySource),
+		})
+		if err == nil {
+			completed = append(completed, types.CompletedPart{ETag: resp.CopyPartResult.ETag, PartNumber: aws.Int32(1)})
+			break
+		}
+		if attempt == c.retryAttempts {
+			c.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{Bucket: aws.String(c.bucket), Key: aws.String(fullKey), UploadId: aws.String(uploadID)})
+			return ErrS3Operation{Operation: "upload part copy", Err: err}
+		}
+	}
+
+	// Upload new data as second part
+	for attempt := 0; attempt <= c.retryAttempts; attempt++ {
+		resp, err := c.client.UploadPart(ctx, &s3.UploadPartInput{
+			Bucket:     aws.String(c.bucket),
+			Key:        aws.String(fullKey),
+			PartNumber: aws.Int32(2),
+			UploadId:   aws.String(uploadID),
+			Body:       bytes.NewReader(data),
+		})
+		if err == nil {
+			completed = append(completed, types.CompletedPart{ETag: resp.ETag, PartNumber: aws.Int32(2)})
+			break
+		}
+		if attempt == c.retryAttempts {
+			c.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{Bucket: aws.String(c.bucket), Key: aws.String(fullKey), UploadId: aws.String(uploadID)})
+			return ErrS3Operation{Operation: "upload part", Err: err}
+		}
+	}
+
+	// Complete the multipart upload
+	_, err = c.client.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
+		Bucket:   aws.String(c.bucket),
+		Key:      aws.String(fullKey),
+		UploadId: aws.String(uploadID),
+		MultipartUpload: &types.CompletedMultipartUpload{
+			Parts: completed,
+		},
+	})
+	if err != nil {
+		c.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{Bucket: aws.String(c.bucket), Key: aws.String(fullKey), UploadId: aws.String(uploadID)})
+		return ErrS3Operation{Operation: "complete multipart upload", Err: err}
+	}
+
+	return nil
 }
 
 // DownloadData downloads data from S3 with retry logic.

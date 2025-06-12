@@ -25,8 +25,8 @@ func TestS3ClientWithMock(t *testing.T) {
 		key := "test-file.txt"
 		data := []byte("Hello, S3!")
 
-		// Upload data
-		err := client.UploadData(ctx, key, data)
+		// Upload data using AppendData
+		err := client.AppendData(ctx, key, data)
 		assert.NoError(t, err)
 
 		// Verify it exists in mock server
@@ -46,7 +46,7 @@ func TestS3ClientWithMock(t *testing.T) {
 
 		// First upload
 		data1 := []byte("First part")
-		err := client.UploadData(ctx, key, data1)
+		err := client.AppendData(ctx, key, data1)
 		assert.NoError(t, err)
 
 		// Append more data
@@ -81,7 +81,7 @@ func TestS3ClientWithMock(t *testing.T) {
 		data := []byte("0123456789ABCDEF")
 
 		// Upload test data
-		err := client.UploadData(ctx, key, data)
+		err := client.AppendData(ctx, key, data)
 		assert.NoError(t, err)
 
 		// Download range (bytes 5-9)
@@ -107,7 +107,7 @@ func TestS3ClientWithMock(t *testing.T) {
 		// Length: 52 characters
 
 		// Upload test data
-		err := client.UploadData(ctx, key, data)
+		err := client.AppendData(ctx, key, data)
 		assert.NoError(t, err)
 
 		// Download last 10 bytes
@@ -132,7 +132,7 @@ func TestS3ClientWithMock(t *testing.T) {
 		nonExistentKey := "non-existent-file.txt"
 
 		// Upload a file
-		err := client.UploadData(ctx, existingKey, []byte("test"))
+		err := client.AppendData(ctx, existingKey, []byte("test"))
 		assert.NoError(t, err)
 
 		// Check existing file
@@ -152,7 +152,7 @@ func TestS3ClientWithMock(t *testing.T) {
 		data := []byte("This file has exactly 32 chars!")
 
 		// Upload test data
-		err := client.UploadData(ctx, key, data)
+		err := client.AppendData(ctx, key, data)
 		assert.NoError(t, err)
 
 		// Get object size
@@ -207,7 +207,7 @@ func TestS3ClientKeyPrefixing(t *testing.T) {
 		data := []byte("test data")
 
 		// Upload data
-		err = client.UploadData(ctx, key, data)
+		err = client.AppendData(ctx, key, data)
 		assert.NoError(t, err)
 
 		// Verify it's stored with prefix
@@ -232,7 +232,7 @@ func TestS3ClientKeyPrefixing(t *testing.T) {
 		data := []byte("no prefix data")
 
 		// Upload data
-		err = client.UploadData(ctx, key, data)
+		err = client.AppendData(ctx, key, data)
 		assert.NoError(t, err)
 
 		// Verify it's stored without prefix
@@ -265,7 +265,7 @@ func TestMockServerDirectly(t *testing.T) {
 		}
 
 		for key, data := range files {
-			err := client.UploadData(ctx, key, data)
+			err := client.AppendData(ctx, key, data)
 			assert.NoError(t, err)
 		}
 
@@ -292,7 +292,7 @@ func TestMockServerDirectly(t *testing.T) {
 		key := "direct-test.txt"
 		data := []byte("direct access test")
 
-		err = client.UploadData(ctx, key, data)
+		err = client.AppendData(ctx, key, data)
 		assert.NoError(t, err)
 
 		// Access directly via mock server

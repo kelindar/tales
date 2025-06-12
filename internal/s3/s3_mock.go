@@ -21,13 +21,20 @@ import (
 type MockS3Server struct {
 	server  *httptest.Server
 	objects map[string][]byte // key -> data
+	uploads map[string]*multipartUpload
 	mu      sync.RWMutex
+}
+
+type multipartUpload struct {
+	key   string
+	parts map[int][]byte
 }
 
 // NewMockS3Server creates a new mock S3 server
 func NewMockS3Server() *MockS3Server {
 	mock := &MockS3Server{
 		objects: make(map[string][]byte),
+		uploads: make(map[string]*multipartUpload),
 	}
 
 	mux := http.NewServeMux()
@@ -83,12 +90,22 @@ func (m *MockS3Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	key := parts[1]
 	fullKey := fmt.Sprintf("%s/%s", bucket, key)
 
-	switch r.Method {
-	case "GET":
+	q := r.URL.Query()
+
+	switch {
+	case r.Method == http.MethodPost && q.Has("uploads"):
+		m.handleCreateMultipartUpload(w, r, fullKey)
+	case r.Method == http.MethodPut && q.Has("partNumber") && q.Has("uploadId"):
+		m.handleUploadPart(w, r, fullKey)
+	case r.Method == http.MethodPost && q.Has("uploadId"):
+		m.handleCompleteMultipartUpload(w, r, fullKey)
+	case r.Method == http.MethodDelete && q.Has("uploadId"):
+		m.handleAbortMultipartUpload(w, r, fullKey)
+	case r.Method == http.MethodGet:
 		m.handleGetObject(w, r, fullKey)
-	case "PUT":
+	case r.Method == http.MethodPut:
 		m.handlePutObject(w, r, fullKey)
-	case "HEAD":
+	case r.Method == http.MethodHead:
 		m.handleHeadObject(w, r, fullKey)
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -220,6 +237,95 @@ func (m *MockS3Server) handleHeadObject(w http.ResponseWriter, r *http.Request, 
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	w.WriteHeader(http.StatusOK)
+}
+
+// handleCreateMultipartUpload starts a new multipart upload
+func (m *MockS3Server) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Request, key string) {
+	id := fmt.Sprintf("upload-%d", len(m.uploads)+1)
+	m.mu.Lock()
+	m.uploads[id] = &multipartUpload{key: key, parts: make(map[int][]byte)}
+	m.mu.Unlock()
+
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "<InitiateMultipartUploadResult><UploadId>%s</UploadId></InitiateMultipartUploadResult>", id)
+}
+
+// handleUploadPart handles uploading a part or copying an existing object as a part
+func (m *MockS3Server) handleUploadPart(w http.ResponseWriter, r *http.Request, key string) {
+	uploadID := r.URL.Query().Get("uploadId")
+	partStr := r.URL.Query().Get("partNumber")
+	part, _ := strconv.Atoi(partStr)
+
+	m.mu.Lock()
+	up, ok := m.uploads[uploadID]
+	m.mu.Unlock()
+	if !ok {
+		http.Error(w, "upload not found", http.StatusNotFound)
+		return
+	}
+
+	if src := r.Header.Get("x-amz-copy-source"); src != "" {
+		src = strings.TrimPrefix(src, "/")
+		m.mu.RLock()
+		data, exists := m.objects[src]
+		m.mu.RUnlock()
+		if !exists {
+			http.Error(w, "source not found", http.StatusNotFound)
+			return
+		}
+		up.parts[part] = append([]byte(nil), data...)
+		w.Header().Set("ETag", `"mock-etag"`)
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "<CopyPartResult><ETag>\"mock-etag\"</ETag></CopyPartResult>")
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "read body", http.StatusBadRequest)
+		return
+	}
+	up.parts[part] = body
+	w.Header().Set("ETag", `"mock-etag"`)
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleCompleteMultipartUpload completes the upload and assembles the object
+func (m *MockS3Server) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Request, key string) {
+	uploadID := r.URL.Query().Get("uploadId")
+	m.mu.Lock()
+	up, ok := m.uploads[uploadID]
+	if !ok {
+		m.mu.Unlock()
+		http.Error(w, "upload not found", http.StatusNotFound)
+		return
+	}
+
+	var partNums []int
+	for p := range up.parts {
+		partNums = append(partNums, p)
+	}
+	sort.Ints(partNums)
+	var combined []byte
+	for _, p := range partNums {
+		combined = append(combined, up.parts[p]...)
+	}
+	m.objects[up.key] = combined
+	delete(m.uploads, uploadID)
+	m.mu.Unlock()
+
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, "<CompleteMultipartUploadResult/>")
+}
+
+func (m *MockS3Server) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Request, key string) {
+	uploadID := r.URL.Query().Get("uploadId")
+	m.mu.Lock()
+	delete(m.uploads, uploadID)
+	m.mu.Unlock()
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // CreateConfigForMock creates a Config that points to the mock server
