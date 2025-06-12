@@ -48,7 +48,8 @@ func TestIntegration(t *testing.T) {
 
 	// Query for actor 1
 	var results1 []string
-	for _, msg := range logger.Query(1, from, to) {
+	for timestamp, msg := range logger.Query(1, from, to) {
+		_ = timestamp // ignore timestamp for this test
 		results1 = append(results1, msg)
 	}
 	assert.Contains(t, results1, "hello world 1")
@@ -132,21 +133,23 @@ func TestFileFormats(t *testing.T) {
 			codec.NewChunkEntry(100, 150, 300),
 		}
 
-		metadata := &Metadata{
-			Magic:      [4]byte{'T', 'A', 'I', 'L'},
-			Version:    1,
-			DayStart:   time.Now().UnixNano(),
-			ChunkCount: 2,
-			Chunks:     chunks,
-			TailSize:   0, // Will be set during encoding
-		}
+		metadata := codec.NewMetadata(time.Now())
+		metadata.Chunks = chunks
+		metadata.ChunkCount = 2
 
 		// Encode
-		encoded, err := encodeTailMetadata(metadata)
+		encoded, err := codec.EncodeMetadata(metadata)
 		require.NoError(t, err)
 
-		// The encoded data should contain the magic bytes
-		assert.Contains(t, string(encoded[:4]), "TAIL")
+		// The encoded data should be valid JSON containing the magic string
+		assert.Contains(t, string(encoded), "TAIL")
+
+		// Test that we can decode it back
+		decoded, err := codec.DecodeMetadata(encoded)
+		require.NoError(t, err)
+		assert.Equal(t, metadata.Magic, decoded.Magic)
+		assert.Equal(t, metadata.Version, decoded.Version)
+		assert.Equal(t, metadata.ChunkCount, decoded.ChunkCount)
 
 		// Test chunk accessors
 		for i, chunk := range chunks {

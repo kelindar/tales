@@ -62,7 +62,7 @@ func (l *Logger) queryS3Day(ctx context.Context, actor uint32, dayStart time.Tim
 		return true // If meta file doesn't exist, there's no data for this day.
 	}
 
-	tailMetadata, err := decodeTailMetadata(metaBytes)
+	tailMetadata, err := codec.DecodeMetadata(metaBytes)
 	if err != nil {
 		return true // Corrupted metadata.
 	}
@@ -98,11 +98,11 @@ func (l *Logger) downloadIndexEntries(ctx context.Context, key string) ([]codec.
 func (l *Logger) filterIndexEntries(entries []codec.IndexEntry, actor uint32, dayStart, from, to time.Time) []codec.IndexEntry {
 	var filtered []codec.IndexEntry
 
-	fromSeconds := uint32(from.Sub(dayStart).Seconds())
-	toSeconds := uint32(to.Sub(dayStart).Seconds())
+	fromMinutes := uint32(from.Sub(dayStart).Minutes())
+	toMinutes := uint32(to.Sub(dayStart).Minutes())
 
 	for _, entry := range entries {
-		if entry.Actor() == actor && entry.Time() >= fromSeconds && entry.Time() <= toSeconds {
+		if entry.Actor() == actor && entry.Time() >= fromMinutes && entry.Time() <= toMinutes {
 			filtered = append(filtered, entry)
 		}
 	}
@@ -141,7 +141,7 @@ func (l *Logger) downloadAndMergeBitmaps(ctx context.Context, key string, entrie
 }
 
 // queryLogChunks queries log chunks for specific sequence IDs.
-func (l *Logger) queryLogChunks(ctx context.Context, logKey string, tailMetadata *Metadata, bitmap *roaring.Bitmap, dayStart, from, to time.Time, yield func(time.Time, string) bool) bool {
+func (l *Logger) queryLogChunks(ctx context.Context, logKey string, tailMetadata *codec.Metadata, bitmap *roaring.Bitmap, dayStart, from, to time.Time, yield func(time.Time, string) bool) bool {
 	// Iterate over all chunks and query each one.
 	// This is inefficient as we might download chunks that don't contain our sequence IDs,
 	// but the current file format doesn't allow us to map sequence IDs to chunks beforehand.

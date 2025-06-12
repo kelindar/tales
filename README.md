@@ -34,7 +34,7 @@ func (l *Logger) Close() error
 bucket/prefix/YYYY-MM-DD/threads.log   # Daily log: compressed 5-min chunks
 bucket/prefix/YYYY-MM-DD/threads.rbm   # Consolidated actor bitmaps (all actors)
 bucket/prefix/YYYY-MM-DD/threads.idx   # Index: timestamp+actor+bitmap_offset+sizes entries
-bucket/prefix/YYYY-MM-DD/threads.meta  # Metadata: chunk information and file offsets
+bucket/prefix/YYYY-MM-DD/threads.json  # Metadata: chunk information and file offsets
 ```
 
 ## File Formats
