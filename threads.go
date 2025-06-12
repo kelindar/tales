@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kelindar/threads/internal/buffer"
 	"github.com/kelindar/threads/internal/codec"
 	"github.com/kelindar/threads/internal/s3"
 )
@@ -17,7 +18,7 @@ type Logger struct {
 	config        Config
 	s3Client      s3.Client
 	codec         *codec.Codec
-	buffer        *Buffer
+	buffer        *buffer.Buffer
 	atomicCounter uint32
 	dayStart      time.Time
 
@@ -59,7 +60,7 @@ func New(config Config) (*Logger, error) {
 	}
 
 	// Create buffer
-	buffer := NewBuffer(config.BufferSize, codecInstance)
+	buffer := buffer.New(config.BufferSize, codecInstance)
 
 	// Initialize day start (ensure UTC)
 	dayStart := getDayStart(time.Now().UTC())
@@ -215,7 +216,7 @@ func (l *Logger) queryMemoryBuffer(actor uint32, from, to time.Time, yield func(
 	dayStart := l.dayStart
 	l.mu.RUnlock()
 
-	entries := l.buffer.GetActorEntries(actor, dayStart, from, to)
+	entries := l.buffer.Query(actor, dayStart, from, to)
 
 	for _, entry := range entries {
 		sequenceID := entry.ID()

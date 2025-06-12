@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/kelindar/threads/internal/buffer"
 	"github.com/kelindar/threads/internal/codec"
+
 )
 
 // TailMetadata represents the tail metadata structure in log files.
@@ -179,7 +181,7 @@ func (l *Logger) decodeTailMetadata(data []byte) (*TailMetadata, error) {
 }
 
 // appendBitmaps appends compressed bitmaps to the bitmap file and returns index entries.
-func (l *Logger) appendBitmaps(bitmapKey string, actorBitmaps []ActorBitmap, dayStart time.Time) ([]codec.IndexEntry, error) {
+func (l *Logger) appendBitmaps(bitmapKey string, actorBitmaps []buffer.ActorBitmap, dayStart time.Time) ([]codec.IndexEntry, error) {
 	var indexEntries []codec.IndexEntry
 
 	// Get current bitmap file size to calculate offsets

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kelindar/threads/internal/buffer"
 	"github.com/kelindar/threads/internal/codec"
 	"github.com/kelindar/threads/internal/s3"
 	"github.com/stretchr/testify/assert"
@@ -212,7 +213,7 @@ func createLoggerWithMockS3(t *testing.T, mockS3 *s3.MockS3Server) (*Logger, err
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Create buffer
-	buffer := NewBuffer(config.BufferSize, codecInstance)
+	buffer := buffer.New(config.BufferSize, codecInstance)
 
 	// Initialize day start (ensure UTC)
 	dayStart := getDayStart(time.Now().UTC())

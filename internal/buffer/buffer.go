@@ -1,4 +1,4 @@
-package threads
+package buffer
 
 import (
 	"sync"
@@ -19,8 +19,8 @@ type Buffer struct {
 	chunkStart   time.Time
 }
 
-// NewBuffer creates a new buffer with the specified maximum size.
-func NewBuffer(maxSize int, codec *codec.Codec) *Buffer {
+// New creates a new buffer with the specified maximum size.
+func New(maxSize int, codec *codec.Codec) *Buffer {
 	return &Buffer{
 		codec:        codec,
 		data:         make([]byte, 0, maxSize*100), // Estimate ~100 bytes per entry
@@ -98,8 +98,8 @@ func (b *Buffer) parseEntries(data []byte) []codec.LogEntry {
 	return entries
 }
 
-// GetActorEntries returns entries for a specific actor within a time range.
-func (b *Buffer) GetActorEntries(actorID uint32, dayStart time.Time, from, to time.Time) []codec.LogEntry {
+// Query returns entries for a specific actor within a time range.
+func (b *Buffer) Query(actorID uint32, dayStart time.Time, from, to time.Time) []codec.LogEntry {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
@@ -134,26 +134,6 @@ func (b *Buffer) GetActorEntries(actorID uint32, dayStart time.Time, from, to ti
 	}
 
 	return result
-}
-
-// GetActorBitmap returns a copy of the bitmap for a specific actor.
-func (b *Buffer) GetActorBitmap(actorID uint32) *roaring.Bitmap {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-
-	bitmap := b.actorBitmaps[actorID]
-	if bitmap == nil {
-		return roaring.New()
-	}
-
-	return bitmap.Clone()
-}
-
-// Size returns the current number of entries in the buffer.
-func (b *Buffer) Size() int {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return b.entryCount
 }
 
 // ActorBitmap represents a compressed actor bitmap.
@@ -220,13 +200,10 @@ func (b *Buffer) reset() {
 	b.chunkStart = time.Now()
 }
 
-// timeToSequenceID converts a time to a sequence ID for comparison.
-// This is a helper function for range queries.
-func timeToSequenceID(t time.Time, dayStart time.Time) uint32 {
+// timeToSequenceID converts a time to a sequence ID for range queries.
+func timeToSequenceID(t, dayStart time.Time) uint32 {
 	minutesFromDayStart := uint32(t.Sub(dayStart).Minutes())
-	if minutesFromDayStart > 1439 {
-		minutesFromDayStart = 1439
-	}
+
 	// Use 0 for the counter part since we're doing range comparisons
 	return minutesFromDayStart << 20
 }
