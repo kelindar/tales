@@ -2,6 +2,7 @@ package codec
 
 import (
 	"encoding/binary"
+	"time"
 )
 
 const (
@@ -48,6 +49,12 @@ func NewLogEntry(sequenceID uint32, text string, actors []uint32) (LogEntry, err
 	}
 
 	return LogEntry(buf), nil
+}
+
+// ID extracts the sequence ID from a log entry
+// Time reconstructs the timestamp from the day-start and sequence ID.
+func (e LogEntry) Time(dayStart time.Time) time.Time {
+	return dayStart.Add(time.Duration(e.ID()) * time.Second)
 }
 
 // ID extracts the sequence ID from a log entry

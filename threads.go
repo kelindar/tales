@@ -13,25 +13,35 @@ import (
 	"github.com/kelindar/threads/internal/s3"
 )
 
+// logCmd represents a command to log an entry.
+type logCmd struct {
+	text   string
+	actors []uint32
+}
+
+// queryCmd represents a command to query the buffer.
+type queryCmd struct {
+	actor uint32
+	from  time.Time
+	to    time.Time
+	yield func(time.Time, string) bool
+	ret   chan<- []codec.LogEntry
+}
+
+// flushCmd represents a command to flush the buffer.
+type flushCmd struct{
+	done chan struct{}
+}
+
 // Logger provides high-performance, memory-efficient logging and querying of game events.
 type Logger struct {
-	config        Config
-	s3Client      s3.Client
-	codec         *codec.Codec
-	buffer        *buffer.Buffer
-	atomicCounter uint32
-	dayStart      time.Time
-
-	// Synchronization
-	mu      sync.RWMutex
-	flushMu sync.Mutex
-	closed  int32 // atomic flag
-
-	// Background operations
-	ctx        context.Context
-	cancel     context.CancelFunc
-	flushTimer *time.Timer
-	wg         sync.WaitGroup
+	config   Config
+	s3Client s3.Client
+	codec    *codec.Codec
+	commands chan interface{}
+	wg       sync.WaitGroup
+	cancel   context.CancelFunc
+	closed   int32 // atomic flag
 }
 
 // New creates a new Logger instance with the given configuration.
@@ -48,35 +58,32 @@ func New(config Config) (*Logger, error) {
 		return nil, fmt.Errorf("failed to create codec: %w", err)
 	}
 
-	// Create context for background operations
-	ctx, cancel := context.WithCancel(context.Background())
+
 
 	// Create S3 client
-	s3Client, err := s3.NewClient(ctx, config.S3Config)
+	var s3Client s3.Client
+	if config.NewS3Client != nil {
+		s3Client, err = config.NewS3Client(context.Background(), config.S3Config)
+	} else {
+		s3Client, err = s3.NewClient(context.Background(), config.S3Config)
+	}
 	if err != nil {
 		codecInstance.Close()
-		cancel()
 		return nil, err
 	}
 
-	// Create buffer
-	buffer := buffer.New(config.BufferSize, codecInstance)
-
-	// Initialize day start (ensure UTC)
-	dayStart := getDayStart(time.Now().UTC())
-
+	ctx, cancel := context.WithCancel(context.Background())
 	logger := &Logger{
 		config:   config,
 		s3Client: s3Client,
 		codec:    codecInstance,
-		buffer:   buffer,
-		dayStart: dayStart,
-		ctx:      ctx,
+		commands: make(chan interface{}, config.BufferSize),
 		cancel:   cancel,
 	}
 
-	// Start background flush timer
-	logger.startFlushTimer()
+	// Start the background goroutine
+	logger.wg.Add(1)
+	go logger.run(ctx)
 
 	return logger, nil
 }
@@ -91,40 +98,7 @@ func (l *Logger) Log(text string, actors []uint32) error {
 		return ErrInvalidConfig("at least one actor is required")
 	}
 
-	now := time.Now()
-
-	// Check if we need to handle day boundary
-	l.mu.RLock()
-	currentDayStart := l.dayStart
-	l.mu.RUnlock()
-
-	if isNewDay(currentDayStart, now.UTC()) {
-		if err := l.handleDayBoundary(now.UTC()); err != nil {
-			return err
-		}
-	}
-
-	// Generate sequence ID (ensure both times are in UTC)
-	sequenceID := generateSequenceID(l.dayStart, now.UTC(), &l.atomicCounter)
-
-	// Create log entry using codec
-	entry, err := codec.NewLogEntry(sequenceID, text, actors)
-	if err != nil {
-		return fmt.Errorf("failed to create log entry: %w", err)
-	}
-
-	// Add to buffer
-	if !l.buffer.Add(entry) {
-		// Buffer is full, trigger immediate flush
-		if err := l.flushBuffer(); err != nil {
-			return err
-		}
-		// Try adding again after flush
-		if !l.buffer.Add(entry) {
-			return ErrInvalidConfig("entry too large for buffer")
-		}
-	}
-
+	l.commands <- logCmd{text: text, actors: actors}
 	return nil
 }
 
@@ -138,8 +112,9 @@ func (l *Logger) Query(actor uint32, from, to time.Time) iter.Seq2[time.Time, st
 		// Query memory buffer first (most recent data)
 		l.queryMemoryBuffer(actor, from, to, yield)
 
+
 		// Query S3 for historical data
-		l.queryS3Historical(actor, from, to, yield)
+		l.queryS3Historical(context.Background(), actor, from, to, yield)
 	}
 }
 
@@ -149,92 +124,79 @@ func (l *Logger) Close() error {
 		return ErrClosed("logger already closed")
 	}
 
-	// Cancel background operations
-	l.cancel()
-
-	// Stop flush timer
-	if l.flushTimer != nil {
-		l.flushTimer.Stop()
-	}
-
-	// Wait for background operations to complete
+	// Signal the run loop to exit and wait for it to finish
+	close(l.commands)
 	l.wg.Wait()
 
-	// Flush remaining buffer data
-	if err := l.flushBuffer(); err != nil {
-		return err
-	}
-
-	// Close compression resources
+	// Close the codec
 	l.codec.Close()
 
 	return nil
 }
 
-// startFlushTimer starts the background timer for periodic buffer flushing.
-func (l *Logger) startFlushTimer() {
-	l.flushTimer = time.NewTimer(l.config.ChunkInterval)
+// run is the main loop for the logger, handling all state modifications.
+func (l *Logger) run(ctx context.Context) {
+	defer l.wg.Done()
 
-	l.wg.Add(1)
-	go func() {
-		defer l.wg.Done()
+	buf := buffer.New(l.config.BufferSize, l.codec)
+	ticker := time.NewTicker(l.config.ChunkInterval)
+	defer ticker.Stop()
 
-		for {
-			select {
-			case <-l.ctx.Done():
+	dayStart := getDayStart(time.Now().UTC())
+	var atomicCounter uint32
+
+	for {
+		select {
+		case cmd, ok := <-l.commands:
+			if !ok {
+				l.flushBuffer(buf) // Final flush on close
 				return
-			case <-l.flushTimer.C:
-				if atomic.LoadInt32(&l.closed) == 0 {
-					l.flushBuffer()
-					l.flushTimer.Reset(l.config.ChunkInterval)
+			}
+
+			switch c := cmd.(type) {
+			case logCmd:
+				now := time.Now().UTC()
+				if isNewDay(dayStart, now) {
+					l.flushBuffer(buf)
+					dayStart = getDayStart(now)
+					atomic.StoreUint32(&atomicCounter, 0)
+				}
+
+				sequenceID := generateSequenceID(dayStart, now, &atomicCounter)
+				entry, _ := codec.NewLogEntry(sequenceID, c.text, c.actors)
+				if !buf.Add(entry) {
+					l.flushBuffer(buf)
+					buf.Add(entry) // Must succeed
+				}
+
+			case queryCmd:
+				results := buf.Query(c.actor, dayStart, c.from, c.to)
+				c.ret <- results
+
+			case flushCmd:
+				l.flushBuffer(buf)
+				if c.done != nil {
+					close(c.done)
 				}
 			}
+
+		case <-ticker.C:
+			l.flushBuffer(buf)
 		}
-	}()
-}
-
-// handleDayBoundary handles the transition to a new day.
-func (l *Logger) handleDayBoundary(now time.Time) error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	// Flush current buffer before changing day
-	if err := l.flushBuffer(); err != nil {
-		return err
 	}
-
-	// Update day start and reset atomic counter
-	l.dayStart = getDayStart(now)
-	atomic.StoreUint32(&l.atomicCounter, 0)
-
-	return nil
 }
 
 // queryMemoryBuffer queries the in-memory buffer for entries.
 func (l *Logger) queryMemoryBuffer(actor uint32, from, to time.Time, yield func(time.Time, string) bool) {
-	l.mu.RLock()
-	dayStart := l.dayStart
-	l.mu.RUnlock()
+	ret := make(chan []codec.LogEntry, 1)
+	dayStart := getDayStart(from)
+	l.commands <- queryCmd{actor: actor, from: from, to: to, ret: ret}
 
-	entries := l.buffer.Query(actor, dayStart, from, to)
-
-	for _, entry := range entries {
-		sequenceID := entry.ID()
-		timestamp := reconstructTimestamp(sequenceID, dayStart)
-
-		// Get text using accessor
-		text := entry.Text()
-
-		// Convert all times to UTC for comparison
-		timestampUTC := timestamp.UTC()
-		fromUTC := from.UTC()
-		toUTC := to.UTC()
-
-		// Use >= and <= for inclusive range check
-		if (timestampUTC.Equal(fromUTC) || timestampUTC.After(fromUTC)) && (timestampUTC.Equal(toUTC) || timestampUTC.Before(toUTC)) {
-			if !yield(timestamp, text) {
-				return
-			}
+	for _, entry := range <-ret {
+		if !yield(entry.Time(dayStart), entry.Text()) {
+			return
 		}
 	}
 }
+
+

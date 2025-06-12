@@ -1,6 +1,7 @@
 package threads
 
 import (
+	"context"
 	"time"
 
 	"github.com/kelindar/threads/internal/s3"
@@ -11,6 +12,7 @@ type Config struct {
 	S3Config      s3.Config     // S3 configuration (required)
 	ChunkInterval time.Duration // Chunk completion interval (default: 5 minutes)
 	BufferSize    int           // Memory buffer size (default: 1000 entries)
+	NewS3Client   func(context.Context, s3.Config) (s3.Client, error)
 }
 
 // setDefaults applies default values to the configuration.

@@ -1,7 +1,6 @@
 package buffer
 
 import (
-	"sync"
 	"time"
 
 	"github.com/RoaringBitmap/roaring/v2"
@@ -10,7 +9,6 @@ import (
 
 // Buffer represents the in-memory buffer for the current chunk.
 type Buffer struct {
-	mu      sync.RWMutex
 	codec   *codec.Codec               // Codec for compression
 	data    []byte                     // Raw concatenated log entries
 	index   map[uint32]*roaring.Bitmap // Actor ID -> sequence IDs bitmap
@@ -31,11 +29,13 @@ func New(maxSize int, codec *codec.Codec) *Buffer {
 	}
 }
 
+// Size returns the number of entries in the buffer.
+func (b *Buffer) Size() int {
+	return b.length
+}
+
 // Add adds a log entry to the buffer and updates actor bitmaps.
 func (b *Buffer) Add(entry codec.LogEntry) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
 	// Check if buffer is full
 	if b.length >= b.maxSize {
 		return false
@@ -100,9 +100,6 @@ func (b *Buffer) parseEntries(data []byte) []codec.LogEntry {
 
 // Query returns entries for a specific actor within a time range.
 func (b *Buffer) Query(actorID uint32, dayStart time.Time, from, to time.Time) []codec.LogEntry {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-
 	var result []codec.LogEntry
 
 	// Get bitmap for this actor
@@ -159,9 +156,6 @@ type Flush struct {
 // It returns a deep-copied snapshot so the caller owns the returned slices/maps
 // without needing additional synchronization.
 func (b *Buffer) Flush() (Flush, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
 	// Compress raw data
 	compressedData, err := b.codec.Compress(b.data)
 	if err != nil {

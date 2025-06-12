@@ -2,106 +2,78 @@ package threads
 
 import (
 	"context"
-	"fmt"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/kelindar/threads/internal/buffer"
 	"github.com/kelindar/threads/internal/codec"
 	"github.com/kelindar/threads/internal/s3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestThreadsIntegration(t *testing.T) {
-	// Start mock S3 server
+func TestIntegration(t *testing.T) {
+	// Create a mock S3 server
 	mockS3 := s3.NewMockS3Server()
 	defer mockS3.Close()
 
-	// Create logger with mock S3
-	logger, err := createLoggerWithMockS3(t, mockS3)
+	// Create S3 config for mock server
+	s3Config := s3.CreateConfigForMock(mockS3, "test-bucket", "test-prefix")
+
+	// Create logger config
+	config := Config{
+		ChunkInterval: 1 * time.Minute,
+		BufferSize:    1024 * 1024, // 1MB
+		S3Config:      s3Config,
+		NewS3Client: func(ctx context.Context, config s3.Config) (s3.Client, error) {
+			return s3.NewMockClient(ctx, mockS3, config)
+		},
+	}
+
+	logger, err := New(config)
 	require.NoError(t, err)
 	defer logger.Close()
 
-	// Test basic logging
-	t.Run("BasicLogging", func(t *testing.T) {
-		err := logger.Log("Hello, world!", []uint32{12345, 67890})
-		assert.NoError(t, err)
+	// Log some messages
+	logger.Log("hello world 1", []uint32{1})
+	logger.Log("hello world 2", []uint32{2})
+	logger.Log("hello world 3", []uint32{1, 3})
 
-		err = logger.Log("Second message", []uint32{12345})
-		assert.NoError(t, err)
+	// Wait for flush to happen
+	done := make(chan struct{})
+	logger.commands <- flushCmd{done: done}
+	<-done // wait for flush to complete
 
-		err = logger.Log("Third message", []uint32{67890, 11111})
-		assert.NoError(t, err)
-	})
+	from := time.Now().Add(-1 * time.Hour)
+	to := time.Now().Add(1 * time.Hour)
 
-	// Test buffer queries (recent data)
-	t.Run("BufferQueries", func(t *testing.T) {
-		from := time.Now().Add(-1 * time.Minute)
-		to := time.Now().Add(1 * time.Minute)
+	// Query for actor 1
+	var results1 []string
+	for _, msg := range logger.Query(1, from, to) {
+		results1 = append(results1, msg)
+	}
+	assert.Contains(t, results1, "hello world 1")
+	assert.Contains(t, results1, "hello world 3")
 
-		// Query for actor 12345
-		var messages []string
-		for timestamp, text := range logger.Query(12345, from, to) {
-			t.Logf("Found message at %s: %s", timestamp.Format(time.RFC3339), text)
-			messages = append(messages, text)
-		}
+	// Query for actor 2
+	var results2 []string
+	for _, msg := range logger.Query(2, from, to) {
+		results2 = append(results2, msg)
+	}
+	assert.Contains(t, results2, "hello world 2")
 
-		// Should find 2 messages for actor 12345
-		assert.Len(t, messages, 2)
-		assert.Contains(t, messages, "Hello, world!")
-		assert.Contains(t, messages, "Second message")
-	})
+	// Query for actor 3
+	var results3 []string
+	for _, msg := range logger.Query(3, from, to) {
+		results3 = append(results3, msg)
+	}
+	assert.Contains(t, results3, "hello world 3")
 
-	// Test forced flush to S3
-	t.Run("FlushToS3", func(t *testing.T) {
-		// Force a flush by calling the internal method
-		err := logger.flushBuffer()
-		assert.NoError(t, err)
-
-		// Check that files were created in mock S3
-		objects := mockS3.ListObjects()
-		t.Logf("Objects in mock S3: %v", objects)
-
-		// Should have created log, bitmap, and index files
-		var hasLog, hasBitmap, hasIndex bool
-		for _, obj := range objects {
-			if strings.Contains(obj, "threads.log") {
-				hasLog = true
-			}
-			if strings.Contains(obj, "threads.rbm") {
-				hasBitmap = true
-			}
-			if strings.Contains(obj, "threads.idx") {
-				hasIndex = true
-			}
-		}
-
-		assert.True(t, hasLog, "Should have created log file")
-		assert.True(t, hasBitmap, "Should have created bitmap file")
-		assert.True(t, hasIndex, "Should have created index file")
-	})
-
-	// Test historical queries (S3 data)
-	t.Run("HistoricalQueries", func(t *testing.T) {
-		// Add more data after flush
-		err := logger.Log("Post-flush message", []uint32{12345})
-		assert.NoError(t, err)
-
-		// Query a wide time range that should include both buffer and S3 data
-		from := time.Now().Add(-1 * time.Hour)
-		to := time.Now().Add(1 * time.Hour)
-
-		var messages []string
-		for timestamp, text := range logger.Query(12345, from, to) {
-			t.Logf("Historical query found: %s at %s", text, timestamp.Format(time.RFC3339))
-			messages = append(messages, text)
-		}
-
-		// Should find messages from both buffer and S3
-		assert.GreaterOrEqual(t, len(messages), 1)
-	})
+	// Query for actor 4 (no logs)
+	var results4 []string
+	for _, msg := range logger.Query(4, from, to) {
+		results4 = append(results4, msg)
+	}
+	assert.Empty(t, results4)
 }
 
 func TestSequenceIDGeneration(t *testing.T) {
@@ -185,51 +157,3 @@ func TestFileFormats(t *testing.T) {
 	})
 }
 
-// createLoggerWithMockS3 creates a logger configured to use the mock S3 server
-func createLoggerWithMockS3(t *testing.T, mockS3 *s3.MockS3Server) (*Logger, error) {
-	// Create S3 config for mock server
-	s3Config := s3.CreateConfigForMock(mockS3, "test-bucket", "test-prefix")
-
-	// Create mock S3 client
-	customS3Client, err := s3.NewMockClient(context.Background(), mockS3, s3Config)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create logger config
-	config := Config{
-		S3Config:      s3Config,
-		ChunkInterval: 5 * time.Minute,
-		BufferSize:    1000,
-	}
-
-	// Create codec for compression/decompression
-	codecInstance, err := codec.NewCodec()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create codec: %w", err)
-	}
-
-	// Create context for background operations
-	ctx, cancel := context.WithCancel(context.Background())
-
-	// Create buffer
-	buffer := buffer.New(config.BufferSize, codecInstance)
-
-	// Initialize day start (ensure UTC)
-	dayStart := getDayStart(time.Now().UTC())
-
-	logger := &Logger{
-		config:   config,
-		s3Client: customS3Client,
-		codec:    codecInstance,
-		buffer:   buffer,
-		dayStart: dayStart,
-		ctx:      ctx,
-		cancel:   cancel,
-	}
-
-	// Start background flush timer
-	logger.startFlushTimer()
-
-	return logger, nil
-}

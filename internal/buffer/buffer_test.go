@@ -1,7 +1,6 @@
 package buffer
 
 import (
-	"sync"
 	"testing"
 	"time"
 
@@ -95,35 +94,4 @@ func TestBuffer_Query(t *testing.T) {
 	assert.Empty(t, results)
 }
 
-func TestBuffer_Concurrency(t *testing.T) {
-	c, _ := codec.NewCodec()
-	buf := New(1000, c)
-	var wg sync.WaitGroup
 
-	// Concurrent adds
-	for i := 0; i < 100; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			entry, _ := codec.NewLogEntry(uint32(i), "test", []uint32{uint32(i)})
-			buf.Add(entry)
-		}(i)
-	}
-
-	wg.Wait()
-	assert.Equal(t, 100, buf.length)
-
-	// Concurrent flush and adds
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		_, _ = buf.Flush()
-	}()
-	go func() {
-		defer wg.Done()
-		entry, _ := codec.NewLogEntry(101, "test", []uint32{101})
-		buf.Add(entry)
-	}()
-
-	wg.Wait()
-}

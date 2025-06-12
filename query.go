@@ -1,8 +1,8 @@
 package threads
 
 import (
+	"context"
 	"fmt"
-	"sort"
 	"time"
 
 	"github.com/RoaringBitmap/roaring/v2"
@@ -10,13 +10,13 @@ import (
 )
 
 // queryS3Historical implements the S3 historical query logic.
-func (l *Logger) queryS3Historical(actor uint32, from, to time.Time, yield func(time.Time, string) bool) {
+func (l *Logger) queryS3Historical(ctx context.Context, actor uint32, from, to time.Time, yield func(time.Time, string) bool) {
 	// Query each day in the time range
 	current := getDayStart(from)
 	end := getDayStart(to).Add(24 * time.Hour)
 
 	for current.Before(end) {
-		if !l.queryS3Day(actor, current, from, to, yield) {
+				if !l.queryS3Day(ctx, actor, current, from, to, yield) {
 			return // yield returned false, stop iteration
 		}
 		current = current.Add(24 * time.Hour)
@@ -24,16 +24,17 @@ func (l *Logger) queryS3Historical(actor uint32, from, to time.Time, yield func(
 }
 
 // queryS3Day queries S3 data for a specific day.
-func (l *Logger) queryS3Day(actor uint32, dayStart time.Time, from, to time.Time, yield func(time.Time, string) bool) bool {
+func (l *Logger) queryS3Day(ctx context.Context, actor uint32, dayStart time.Time, from, to time.Time, yield func(time.Time, string) bool) bool {
 	dateString := getDateString(dayStart)
 
 	// Build S3 keys
 	logKey := fmt.Sprintf("%s/threads.log", dateString)
+	metaKey := fmt.Sprintf("%s/threads.meta", dateString)
 	bitmapKey := fmt.Sprintf("%s/threads.rbm", dateString)
 	indexKey := fmt.Sprintf("%s/threads.idx", dateString)
 
 	// 1. Download and parse index file
-	indexEntries, err := l.downloadIndexEntries(indexKey)
+	indexEntries, err := l.downloadIndexEntries(ctx, indexKey)
 	if err != nil {
 		// If index file doesn't exist, skip this day
 		return true
@@ -46,7 +47,7 @@ func (l *Logger) queryS3Day(actor uint32, dayStart time.Time, from, to time.Time
 	}
 
 	// 3. Download and merge bitmap chunks
-	mergedBitmap, err := l.downloadAndMergeBitmaps(bitmapKey, relevantEntries)
+	mergedBitmap, err := l.downloadAndMergeBitmaps(ctx, bitmapKey, relevantEntries)
 	if err != nil {
 		return true // Skip on error
 	}
@@ -55,19 +56,24 @@ func (l *Logger) queryS3Day(actor uint32, dayStart time.Time, from, to time.Time
 		return true
 	}
 
-	// 4. Download tail metadata to get chunk information
-	tailMetadata, err := l.readTailMetadata(logKey, dayStart)
+	// 4. Download metadata file to get chunk information
+	metaBytes, err := l.s3Client.DownloadData(ctx, metaKey)
 	if err != nil {
-		return true // Skip on error
+		return true // If meta file doesn't exist, there's no data for this day.
+	}
+
+	tailMetadata, err := decodeTailMetadata(metaBytes)
+	if err != nil {
+		return true // Corrupted metadata.
 	}
 
 	// 5. Group sequence IDs by log chunks and query
-	return l.queryLogChunks(logKey, tailMetadata, mergedBitmap, dayStart, from, to, yield)
+		return l.queryLogChunks(ctx, logKey, tailMetadata, mergedBitmap, dayStart, from, to, yield)
 }
 
 // downloadIndexEntries downloads and parses the index file.
-func (l *Logger) downloadIndexEntries(indexKey string) ([]codec.IndexEntry, error) {
-	data, err := l.s3Client.DownloadData(l.ctx, indexKey)
+func (l *Logger) downloadIndexEntries(ctx context.Context, key string) ([]codec.IndexEntry, error) {
+	data, err := l.s3Client.DownloadData(ctx, key)
 	if err != nil {
 		return nil, err
 	}
@@ -105,12 +111,12 @@ func (l *Logger) filterIndexEntries(entries []codec.IndexEntry, actor uint32, da
 }
 
 // downloadAndMergeBitmaps downloads bitmap chunks and merges them.
-func (l *Logger) downloadAndMergeBitmaps(bitmapKey string, entries []codec.IndexEntry) (*roaring.Bitmap, error) {
+func (l *Logger) downloadAndMergeBitmaps(ctx context.Context, key string, entries []codec.IndexEntry) (*roaring.Bitmap, error) {
 	mergedBitmap := roaring.New()
 
 	for _, entry := range entries {
 		// Download bitmap chunk using byte range
-		compressedData, err := l.s3Client.DownloadRange(l.ctx, bitmapKey, int64(entry.Offset()), int64(entry.Offset()+uint64(entry.CompressedSize())-1))
+		compressedData, err := l.s3Client.DownloadRange(ctx, key, int64(entry.Offset()), int64(entry.Offset()+uint64(entry.CompressedSize())-1))
 		if err != nil {
 			continue // Skip failed downloads
 		}
@@ -135,57 +141,23 @@ func (l *Logger) downloadAndMergeBitmaps(bitmapKey string, entries []codec.Index
 }
 
 // queryLogChunks queries log chunks for specific sequence IDs.
-func (l *Logger) queryLogChunks(logKey string, tailMetadata *TailMetadata, bitmap *roaring.Bitmap, dayStart, from, to time.Time, yield func(time.Time, string) bool) bool {
-	// Group sequence IDs by the chunks they belong to
-	chunkGroups := l.groupSequenceIDsByChunk(bitmap, tailMetadata)
-
-	// Sort chunk indices for efficient access
-	var chunkIndices []int
-	for chunkIndex := range chunkGroups {
-		chunkIndices = append(chunkIndices, chunkIndex)
-	}
-	sort.Ints(chunkIndices)
-
-	// Query each chunk
-	for _, chunkIndex := range chunkIndices {
-		sequenceIDs := chunkGroups[chunkIndex]
-		if !l.queryLogChunk(logKey, tailMetadata.Chunks[chunkIndex], sequenceIDs, dayStart, from, to, yield) {
-			return false
+func (l *Logger) queryLogChunks(ctx context.Context, logKey string, tailMetadata *TailMetadata, bitmap *roaring.Bitmap, dayStart, from, to time.Time, yield func(time.Time, string) bool) bool {
+	// Iterate over all chunks and query each one.
+	// This is inefficient as we might download chunks that don't contain our sequence IDs,
+	// but the current file format doesn't allow us to map sequence IDs to chunks beforehand.
+	for _, chunk := range tailMetadata.Chunks {
+		if !l.queryLogChunk(ctx, logKey, chunk, bitmap, dayStart, from, to, yield) {
+			return false // Yield returned false, stop.
 		}
 	}
 
 	return true
 }
 
-// groupSequenceIDsByChunk groups sequence IDs by the log chunks they belong to.
-func (l *Logger) groupSequenceIDsByChunk(bitmap *roaring.Bitmap, tailMetadata *TailMetadata) map[int]*roaring.Bitmap {
-	groups := make(map[int]*roaring.Bitmap)
-
-	// For simplicity, we'll assume each chunk covers a 5-minute period
-	// In a real implementation, you'd need more sophisticated chunk mapping
-	chunkDuration := 5 * time.Minute
-	minutesPerChunk := uint32(chunkDuration.Minutes())
-
-	bitmap.Iterate(func(sequenceID uint32) bool {
-		minutes := sequenceID >> 20
-		chunkIndex := int(minutes / minutesPerChunk)
-
-		if chunkIndex < len(tailMetadata.Chunks) {
-			if groups[chunkIndex] == nil {
-				groups[chunkIndex] = roaring.New()
-			}
-			groups[chunkIndex].Add(sequenceID)
-		}
-		return true
-	})
-
-	return groups
-}
-
 // queryLogChunk queries a specific log chunk for sequence IDs.
-func (l *Logger) queryLogChunk(logKey string, chunk codec.ChunkEntry, sequenceIDs *roaring.Bitmap, dayStart, from, to time.Time, yield func(time.Time, string) bool) bool {
+func (l *Logger) queryLogChunk(ctx context.Context, logKey string, chunk codec.ChunkEntry, sequenceIDs *roaring.Bitmap, dayStart, from, to time.Time, yield func(time.Time, string) bool) bool {
 	// Download chunk using byte range
-	compressedData, err := l.s3Client.DownloadRange(l.ctx, logKey, int64(chunk.Offset()), int64(chunk.Offset()+uint64(chunk.CompressedSize())-1))
+	compressedData, err := l.s3Client.DownloadRange(ctx, logKey, int64(chunk.Offset()), int64(chunk.Offset()+uint64(chunk.CompressedSize())-1))
 	if err != nil {
 		return true // Skip failed downloads
 	}
