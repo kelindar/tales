@@ -8,7 +8,6 @@ import (
 
 	"github.com/kelindar/threads/internal/buffer"
 	"github.com/kelindar/threads/internal/codec"
-
 )
 
 // TailMetadata represents the tail metadata structure in log files.
@@ -31,9 +30,7 @@ func (l *Logger) flushBuffer() error {
 	if err != nil {
 		return fmt.Errorf("failed to flush buffer: %w", err)
 	}
-	if len(res.Data) == 0 {
-		return nil
-	}
+
 
 	entriesData := res.Data
 
@@ -54,11 +51,11 @@ func (l *Logger) flushBuffer() error {
 		return fmt.Errorf("failed to read tail metadata: %w", err)
 	}
 
-	// 2. Compress log entries (data is already concatenated in buffer)
-	compressedEntries, err := l.codec.Compress(entriesData)
-	if err != nil {
-		return fmt.Errorf("failed to compress log entries: %w", err)
+	// 2. Handle compressed log entries
+	if entriesData.UncompressedSize == 0 {
+		return nil // Nothing to flush
 	}
+	compressedEntries := entriesData.CompressedData
 
 	// Calculate new chunk metadata
 	var chunkOffset uint64
@@ -67,10 +64,10 @@ func (l *Logger) flushBuffer() error {
 		chunkOffset = lastChunk.Offset() + uint64(lastChunk.CompressedSize())
 	}
 
-	newChunk := codec.NewChunkEntry(chunkOffset, uint32(len(compressedEntries)), uint32(len(entriesData)))
+	newChunk := codec.NewChunkEntry(chunkOffset, uint32(entriesData.CompressedSize), uint32(entriesData.UncompressedSize))
 
 	// 3. Append compressed bitmaps and build index entries
-	indexEntries, err := l.appendBitmaps(bitmapKey, res.ActorBitmaps, dayStart)
+	indexEntries, err := l.appendBitmaps(bitmapKey, res.Index, dayStart)
 	if err != nil {
 		return fmt.Errorf("failed to append bitmaps: %w", err)
 	}
@@ -181,7 +178,7 @@ func (l *Logger) decodeTailMetadata(data []byte) (*TailMetadata, error) {
 }
 
 // appendBitmaps appends compressed bitmaps to the bitmap file and returns index entries.
-func (l *Logger) appendBitmaps(bitmapKey string, actorBitmaps []buffer.ActorBitmap, dayStart time.Time) ([]codec.IndexEntry, error) {
+func (l *Logger) appendBitmaps(bitmapKey string, actorBitmaps []buffer.Index, dayStart time.Time) ([]codec.IndexEntry, error) {
 	var indexEntries []codec.IndexEntry
 
 	// Get current bitmap file size to calculate offsets

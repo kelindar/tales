@@ -136,58 +136,72 @@ func (b *Buffer) Query(actorID uint32, dayStart time.Time, from, to time.Time) [
 	return result
 }
 
-// ActorBitmap represents a compressed actor bitmap.
-type ActorBitmap struct {
-	ActorID          uint32
+// Binary represents compressed data.
+type Binary struct {
 	UncompressedSize uint32
 	CompressedSize   uint32
 	CompressedData   []byte
 }
 
-// FlushResult represents the data returned by Buffer.Flush.
-type FlushResult struct {
-	Data         []byte
-	ActorBitmaps []ActorBitmap
+// Index represents a compressed actor bitmap.
+type Index struct {
+	Binary
+	ActorID uint32
+}
+
+// Flush represents the data returned by Buffer.Flush.
+type Flush struct {
+	Data  Binary
+	Index []Index
 }
 
 // Flush atomically extracts the current buffer contents and resets the buffer.
 // It returns a deep-copied snapshot so the caller owns the returned slices/maps
 // without needing additional synchronization.
-func (b *Buffer) Flush() (FlushResult, error) {
+func (b *Buffer) Flush() (Flush, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	// Copy raw data
-	dataCopy := make([]byte, len(b.data))
-	copy(dataCopy, b.data)
+	// Compress raw data
+	compressedData, err := b.codec.Compress(b.data)
+	if err != nil {
+		return Flush{}, err
+	}
+	dataCopy := Binary{
+		UncompressedSize: uint32(len(b.data)),
+		CompressedSize:   uint32(len(compressedData)),
+		CompressedData:   compressedData,
+	}
 
 	// Compress bitmaps
-	compressedBitmaps := make([]ActorBitmap, 0, len(b.actorBitmaps))
+	compressedBitmaps := make([]Index, 0, len(b.actorBitmaps))
 	for actorID, bm := range b.actorBitmaps {
 		// Serialize bitmap
 		bitmapData, err := bm.ToBytes()
 		if err != nil {
-			return FlushResult{}, err
+			return Flush{}, err
 		}
 
 		// Compress bitmap
-		compressedData, err := b.codec.Compress(bitmapData)
+		compressedBitmapData, err := b.codec.Compress(bitmapData)
 		if err != nil {
-			return FlushResult{}, err
+			return Flush{}, err
 		}
 
-		compressedBitmaps = append(compressedBitmaps, ActorBitmap{
-			ActorID:          actorID,
-			UncompressedSize: uint32(len(bitmapData)),
-			CompressedSize:   uint32(len(compressedData)),
-			CompressedData:   compressedData,
+		compressedBitmaps = append(compressedBitmaps, Index{
+			ActorID: actorID,
+			Binary: Binary{
+				UncompressedSize: uint32(len(bitmapData)),
+				CompressedSize:   uint32(len(compressedBitmapData)),
+				CompressedData:   compressedBitmapData,
+			},
 		})
 	}
 
 	// Reset buffer state
 	b.reset()
 
-	return FlushResult{Data: dataCopy, ActorBitmaps: compressedBitmaps}, nil
+	return Flush{Data: dataCopy, Index: compressedBitmaps}, nil
 }
 
 // reset resets the buffer's internal state.
