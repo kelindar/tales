@@ -17,8 +17,8 @@ func TestNewBuffer(t *testing.T) {
 	assert.Equal(t, 100, buf.maxSize)
 	assert.NotNil(t, buf.codec)
 	assert.NotNil(t, buf.data)
-	assert.NotNil(t, buf.actorBitmaps)
-	assert.Equal(t, 0, buf.entryCount)
+	assert.NotNil(t, buf.index)
+	assert.Equal(t, 0, buf.length)
 }
 
 func TestBuffer_Add(t *testing.T) {
@@ -30,11 +30,11 @@ func TestBuffer_Add(t *testing.T) {
 	entry3, _ := codec.NewLogEntry(3, "test3", []uint32{40})
 
 	assert.True(t, buf.Add(entry1))
-	assert.Equal(t, 1, buf.entryCount)
+	assert.Equal(t, 1, buf.length)
 	assert.True(t, buf.Add(entry2))
-	assert.Equal(t, 2, buf.entryCount)
+	assert.Equal(t, 2, buf.length)
 	assert.False(t, buf.Add(entry3)) // Buffer is full
-	assert.Equal(t, 2, buf.entryCount)
+	assert.Equal(t, 2, buf.length)
 }
 
 func TestBuffer_Flush(t *testing.T) {
@@ -62,7 +62,7 @@ func TestBuffer_Flush(t *testing.T) {
 	}
 
 	// Check if buffer is reset
-	assert.Equal(t, 0, buf.entryCount)
+	assert.Equal(t, 0, buf.length)
 	assert.Empty(t, buf.data)
 }
 
@@ -111,7 +111,7 @@ func TestBuffer_Concurrency(t *testing.T) {
 	}
 
 	wg.Wait()
-	assert.Equal(t, 100, buf.entryCount)
+	assert.Equal(t, 100, buf.length)
 
 	// Concurrent flush and adds
 	wg.Add(2)

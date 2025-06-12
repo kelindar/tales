@@ -10,24 +10,24 @@ import (
 
 // Buffer represents the in-memory buffer for the current chunk.
 type Buffer struct {
-	mu           sync.RWMutex
-	codec        *codec.Codec               // Codec for compression
-	data         []byte                     // Raw concatenated log entries
-	actorBitmaps map[uint32]*roaring.Bitmap // Actor ID -> sequence IDs bitmap
-	entryCount   int                        // Number of entries in buffer
-	maxSize      int                        // Maximum number of entries
-	chunkStart   time.Time
+	mu      sync.RWMutex
+	codec   *codec.Codec               // Codec for compression
+	data    []byte                     // Raw concatenated log entries
+	index   map[uint32]*roaring.Bitmap // Actor ID -> sequence IDs bitmap
+	length  int                        // Number of entries in buffer
+	maxSize int                        // Maximum number of entries
+	start   time.Time                  // Start time of the buffer
 }
 
 // New creates a new buffer with the specified maximum size.
 func New(maxSize int, codec *codec.Codec) *Buffer {
 	return &Buffer{
-		codec:        codec,
-		data:         make([]byte, 0, maxSize*100), // Estimate ~100 bytes per entry
-		actorBitmaps: make(map[uint32]*roaring.Bitmap),
-		entryCount:   0,
-		maxSize:      maxSize,
-		chunkStart:   time.Now(),
+		codec:   codec,
+		data:    make([]byte, 0, maxSize*100), // Estimate ~100 bytes per entry
+		index:   make(map[uint32]*roaring.Bitmap),
+		length:  0,
+		maxSize: maxSize,
+		start:   time.Now(),
 	}
 }
 
@@ -37,13 +37,13 @@ func (b *Buffer) Add(entry codec.LogEntry) bool {
 	defer b.mu.Unlock()
 
 	// Check if buffer is full
-	if b.entryCount >= b.maxSize {
+	if b.length >= b.maxSize {
 		return false
 	}
 
 	// Add entry to buffer data
 	b.data = append(b.data, entry...)
-	b.entryCount++
+	b.length++
 
 	// Get sequence ID and actors using accessors
 	sequenceID := entry.ID()
@@ -51,10 +51,10 @@ func (b *Buffer) Add(entry codec.LogEntry) bool {
 
 	// Update actor bitmaps
 	for _, actorID := range actors {
-		bitmap := b.actorBitmaps[actorID]
+		bitmap := b.index[actorID]
 		if bitmap == nil {
 			bitmap = roaring.New()
-			b.actorBitmaps[actorID] = bitmap
+			b.index[actorID] = bitmap
 		}
 		bitmap.Add(sequenceID)
 	}
@@ -106,7 +106,7 @@ func (b *Buffer) Query(actorID uint32, dayStart time.Time, from, to time.Time) [
 	var result []codec.LogEntry
 
 	// Get bitmap for this actor
-	bitmap := b.actorBitmaps[actorID]
+	bitmap := b.index[actorID]
 	if bitmap == nil {
 		return result
 	}
@@ -174,8 +174,8 @@ func (b *Buffer) Flush() (Flush, error) {
 	}
 
 	// Compress bitmaps
-	compressedBitmaps := make([]Index, 0, len(b.actorBitmaps))
-	for actorID, bm := range b.actorBitmaps {
+	compressedBitmaps := make([]Index, 0, len(b.index))
+	for actorID, bm := range b.index {
 		// Serialize bitmap
 		bitmapData, err := bm.ToBytes()
 		if err != nil {
@@ -207,11 +207,11 @@ func (b *Buffer) Flush() (Flush, error) {
 // reset resets the buffer's internal state.
 func (b *Buffer) reset() {
 	b.data = b.data[:0]
-	b.entryCount = 0
-	for _, bm := range b.actorBitmaps {
+	b.length = 0
+	for _, bm := range b.index {
 		bm.Clear()
 	}
-	b.chunkStart = time.Now()
+	b.start = time.Now()
 }
 
 // timeToSequenceID converts a time to a sequence ID for range queries.
