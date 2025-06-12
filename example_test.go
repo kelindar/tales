@@ -79,34 +79,3 @@ func ExampleLogger_Query() {
 	// 2025-06-11 21:30: Player moved to position (100, 200)
 	// 2025-06-11 21:30: Player attacked monster
 }
-
-// ExampleConfig demonstrates different configuration options
-func ExampleConfig() {
-	// Basic configuration
-	basicConfig := Config{
-		S3Config: s3.Config{
-			Bucket: "my-logs",
-			Region: "us-west-2",
-		},
-	}
-
-	// Advanced configuration
-	advancedConfig := Config{
-		S3Config: s3.Config{
-			Bucket:        "my-logs",
-			Region:        "us-west-2",
-			Prefix:        "production/game-events",
-			MaxConcurrent: 20,
-			RetryAttempts: 5,
-		},
-		ChunkInterval: 10 * time.Minute, // Flush every 10 minutes
-		BufferSize:    2000,             // Larger buffer
-	}
-
-	fmt.Printf("Basic config bucket: %s\n", basicConfig.S3Config.Bucket)
-	fmt.Printf("Advanced config prefix: %s\n", advancedConfig.S3Config.Prefix)
-
-	// Output:
-	// Basic config bucket: my-logs
-	// Advanced config prefix: production/game-events
-}

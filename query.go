@@ -16,7 +16,7 @@ func (l *Logger) queryS3Historical(ctx context.Context, actor uint32, from, to t
 	end := getDayStart(to).Add(24 * time.Hour)
 
 	for current.Before(end) {
-				if !l.queryS3Day(ctx, actor, current, from, to, yield) {
+		if !l.queryS3Day(ctx, actor, current, from, to, yield) {
 			return // yield returned false, stop iteration
 		}
 		current = current.Add(24 * time.Hour)
@@ -68,7 +68,7 @@ func (l *Logger) queryS3Day(ctx context.Context, actor uint32, dayStart time.Tim
 	}
 
 	// 5. Group sequence IDs by log chunks and query
-		return l.queryLogChunks(ctx, logKey, tailMetadata, mergedBitmap, dayStart, from, to, yield)
+	return l.queryLogChunks(ctx, logKey, tailMetadata, mergedBitmap, dayStart, from, to, yield)
 }
 
 // downloadIndexEntries downloads and parses the index file.
@@ -141,7 +141,7 @@ func (l *Logger) downloadAndMergeBitmaps(ctx context.Context, key string, entrie
 }
 
 // queryLogChunks queries log chunks for specific sequence IDs.
-func (l *Logger) queryLogChunks(ctx context.Context, logKey string, tailMetadata *TailMetadata, bitmap *roaring.Bitmap, dayStart, from, to time.Time, yield func(time.Time, string) bool) bool {
+func (l *Logger) queryLogChunks(ctx context.Context, logKey string, tailMetadata *Metadata, bitmap *roaring.Bitmap, dayStart, from, to time.Time, yield func(time.Time, string) bool) bool {
 	// Iterate over all chunks and query each one.
 	// This is inefficient as we might download chunks that don't contain our sequence IDs,
 	// but the current file format doesn't allow us to map sequence IDs to chunks beforehand.

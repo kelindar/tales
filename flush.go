@@ -13,8 +13,8 @@ import (
 	"github.com/kelindar/threads/internal/codec"
 )
 
-// TailMetadata represents the tail metadata structure in log files.
-type TailMetadata struct {
+// Metadata represents the tail metadata structure in log files.
+type Metadata struct {
 	Magic           [4]byte
 	Version         uint32
 	DayStart        int64
@@ -54,12 +54,12 @@ func (l *Logger) flushBuffer(buf *buffer.Buffer) error {
 
 	// 1. Read existing metadata file.
 	metaBytes, err := l.s3Client.DownloadData(ctx, metaKey)
-	var tailMetadata *TailMetadata
+	var meta *Metadata
 	if err != nil {
 		var nsk *types.NoSuchKey
 		if errors.As(err, &nsk) {
 			// Metadata file doesn't exist, create a new one.
-			tailMetadata = &TailMetadata{
+			meta = &Metadata{
 				Magic:    [4]byte{'T', 'A', 'I', 'L'},
 				Version:  1,
 				DayStart: dayStart.UnixNano(),
@@ -69,7 +69,7 @@ func (l *Logger) flushBuffer(buf *buffer.Buffer) error {
 		}
 	} else {
 		// Metadata file exists, decode it.
-		tailMetadata, err = decodeTailMetadata(metaBytes)
+		meta, err = decodeTailMetadata(metaBytes)
 		if err != nil {
 			return fmt.Errorf("failed to decode metadata: %w", err)
 		}
@@ -81,14 +81,14 @@ func (l *Logger) flushBuffer(buf *buffer.Buffer) error {
 	}
 
 	// 3. Update tail metadata with new chunk info.
-	chunkOffset := tailMetadata.TotalDataSize
+	chunkOffset := meta.TotalDataSize
 	newChunk := codec.NewChunkEntry(chunkOffset, res.Data.CompressedSize, res.Data.UncompressedSize)
-	tailMetadata.Chunks = append(tailMetadata.Chunks, newChunk)
-	tailMetadata.TotalDataSize += uint64(res.Data.CompressedSize)
-	tailMetadata.ChunkCount = uint32(len(tailMetadata.Chunks))
+	meta.Chunks = append(meta.Chunks, newChunk)
+	meta.TotalDataSize += uint64(res.Data.CompressedSize)
+	meta.ChunkCount = uint32(len(meta.Chunks))
 
 	// 4. Handle bitmaps and index entries.
-	bitmapChunkOffset := tailMetadata.TotalBitmapSize
+	bitmapChunkOffset := meta.TotalBitmapSize
 	for _, rbm := range res.Index {
 		if err := l.s3Client.AppendData(ctx, bitmapKey, rbm.CompressedData); err != nil {
 			return err
@@ -99,15 +99,15 @@ func (l *Logger) flushBuffer(buf *buffer.Buffer) error {
 		}
 		bitmapChunkOffset += uint64(rbm.CompressedSize)
 	}
-	tailMetadata.TotalBitmapSize = bitmapChunkOffset
+	meta.TotalBitmapSize = bitmapChunkOffset
 
 	// 5. Encode the new tail metadata and upload it, overwriting the old one.
-	encodedTail, err := encodeTailMetadata(tailMetadata)
+	encodedTail, err := encodeTailMetadata(meta)
 	if err != nil {
 		return err
 	}
-	tailMetadata.TailSize = uint32(len(encodedTail))
-	encodedTail, err = encodeTailMetadata(tailMetadata) // Re-encode with correct size
+	meta.TailSize = uint32(len(encodedTail))
+	encodedTail, err = encodeTailMetadata(meta) // Re-encode with correct size
 	if err != nil {
 		return err
 	}
@@ -116,13 +116,13 @@ func (l *Logger) flushBuffer(buf *buffer.Buffer) error {
 }
 
 // decodeTailMetadata decodes tail metadata from binary format.
-func decodeTailMetadata(data []byte) (*TailMetadata, error) {
+func decodeTailMetadata(data []byte) (*Metadata, error) {
 	if len(data) < 24 { // Minimum size
 		return nil, fmt.Errorf("tail metadata too short")
 	}
 
 	buf := bytes.NewReader(data)
-	metadata := &TailMetadata{}
+	metadata := &Metadata{}
 
 	if _, err := buf.Read(metadata.Magic[:]); err != nil || string(metadata.Magic[:]) != codec.TailMagic {
 		return nil, fmt.Errorf("invalid magic in tail metadata")
@@ -154,7 +154,7 @@ func decodeTailMetadata(data []byte) (*TailMetadata, error) {
 }
 
 // encodeTailMetadata encodes tail metadata into binary format.
-func encodeTailMetadata(tail *TailMetadata) ([]byte, error) {
+func encodeTailMetadata(tail *Metadata) ([]byte, error) {
 	buf := &bytes.Buffer{}
 
 	// Write magic (4 bytes)

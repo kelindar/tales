@@ -132,7 +132,7 @@ func TestFileFormats(t *testing.T) {
 			codec.NewChunkEntry(100, 150, 300),
 		}
 
-		metadata := &TailMetadata{
+		metadata := &Metadata{
 			Magic:      [4]byte{'T', 'A', 'I', 'L'},
 			Version:    1,
 			DayStart:   time.Now().UnixNano(),
@@ -156,4 +156,3 @@ func TestFileFormats(t *testing.T) {
 		}
 	})
 }
-
