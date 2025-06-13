@@ -178,7 +178,7 @@ func (l *Service) queryChunk(ctx context.Context, logKey string, chunk codec.Chu
 		}
 
 		ts := seq.TimeOf(id, day)
-		if ts.After(from) && ts.Before(to) && !yield(ts, entry.Text()) {
+		if !ts.Before(from) && !ts.After(to) && !yield(ts, entry.Text()) {
 			return false // Stop iteration
 		}
 	}
