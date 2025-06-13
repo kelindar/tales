@@ -68,7 +68,7 @@ func (b *Buffer) Add(entry codec.LogEntry) bool {
 func (b *Buffer) Query(actorID uint32, dayStart time.Time, from, to time.Time) iter.Seq[codec.LogEntry] {
 	return func(yield func(codec.LogEntry) bool) {
 		t0 := asSequence(from.UTC(), dayStart)
-		t1 := asSequence(to.UTC(), dayStart)
+		t1 := asSequence(to.UTC(), dayStart) | counterMask
 
 		for buffer := b.data; len(buffer) > 0; {
 			entry := codec.LogEntry(buffer)
@@ -170,6 +170,8 @@ func (b *Buffer) reset() {
 }
 
 // asSequence converts a time to a sequence ID for range queries.
+const counterMask = (1 << 20) - 1
+
 func asSequence(t, dayStart time.Time) uint32 {
 	return uint32(t.Sub(dayStart).Minutes()) << 20
 }
