@@ -42,6 +42,8 @@ func TestIntegration(t *testing.T) {
 	logger.commands <- flushCmd{done: done}
 	<-done // wait for flush to complete
 
+	logger.Log("hello world 4", 1, 2)
+
 	from := time.Now().Add(-1 * time.Hour)
 	to := time.Now().Add(1 * time.Hour)
 
@@ -53,6 +55,7 @@ func TestIntegration(t *testing.T) {
 	}
 	assert.Contains(t, results1, "hello world 1")
 	assert.Contains(t, results1, "hello world 3")
+	assert.Contains(t, results1, "hello world 4")
 
 	// Query for actor 2
 	var results2 []string
@@ -60,6 +63,7 @@ func TestIntegration(t *testing.T) {
 		results2 = append(results2, msg)
 	}
 	assert.Contains(t, results2, "hello world 2")
+	assert.Contains(t, results2, "hello world 4")
 
 	// Query for actor 3
 	var results3 []string
