@@ -85,7 +85,7 @@ func (l *Logger) flushBuffer(buf *buffer.Buffer) error {
 	if err != nil {
 		return fmt.Errorf("failed to encode metadata: %w", err)
 	}
-	meta.TailSize = uint32(len(encodedMeta))
+	meta.Size = uint32(len(encodedMeta))
 
 	// Re-encode with correct size
 	encodedMeta, err = codec.EncodeMetadata(meta)

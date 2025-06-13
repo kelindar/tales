@@ -50,7 +50,7 @@ func TestMetadata(t *testing.T) {
 		original := NewMetadata(dayStart)
 		original.Update(0, 100, 200, 256)
 		original.Update(100, 150, 300, 512)
-		original.TailSize = 1024
+		original.Size = 1024
 
 		// Encode to JSON
 		encoded, err := EncodeMetadata(original)
@@ -68,7 +68,7 @@ func TestMetadata(t *testing.T) {
 		// Verify all fields match
 		assert.Equal(t, original.DayStart, decoded.DayStart)
 		assert.Equal(t, original.ChunkCount, decoded.ChunkCount)
-		assert.Equal(t, original.TailSize, decoded.TailSize)
+		assert.Equal(t, original.Size, decoded.Size)
 		assert.Equal(t, original.TotalDataSize, decoded.TotalDataSize)
 		assert.Equal(t, original.TotalBitmapSize, decoded.TotalBitmapSize)
 		assert.Len(t, decoded.Chunks, len(original.Chunks))

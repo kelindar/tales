@@ -10,7 +10,7 @@ type Metadata struct {
 	DayStart        int64        `json:"day_start"`
 	ChunkCount      uint32       `json:"chunk_count"`
 	Chunks          []ChunkEntry `json:"chunks"`
-	TailSize        uint32       `json:"tail_size"`
+	Size            uint32       `json:"tail_size"`
 	TotalDataSize   uint32       `json:"total_data_size"`
 	TotalBitmapSize uint32       `json:"total_bitmap_size"`
 }
