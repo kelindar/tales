@@ -40,7 +40,7 @@ func (l *Service) flushBuffer(buf *buffer.Buffer) error {
 	aidx := fmt.Sprintf("%s/actors.idx", date)
 
 	// 1. Read existing metadata file.
-	metaBytes, err := l.s3Client.DownloadData(ctx, tidx)
+	metaBytes, err := l.s3Client.Download(ctx, tidx)
 	var meta *codec.Metadata
 	if err != nil {
 		var nsk *types.NoSuchKey
@@ -59,7 +59,7 @@ func (l *Service) flushBuffer(buf *buffer.Buffer) error {
 	}
 
 	// 2. Append new log data to the log file.
-	if err := l.s3Client.AppendData(ctx, tlog, res.Data.CompressedData); err != nil {
+	if err := l.s3Client.Append(ctx, tlog, res.Data.CompressedData); err != nil {
 		return fmt.Errorf("failed to append to log file: %w", err)
 	}
 
@@ -69,11 +69,11 @@ func (l *Service) flushBuffer(buf *buffer.Buffer) error {
 	// 4. Handle bitmaps and index entries.
 	bitmapChunkOffset := meta.TotalBitmapSize
 	for _, rbm := range res.Index {
-		if err := l.s3Client.AppendData(ctx, alog, rbm.CompressedData); err != nil {
+		if err := l.s3Client.Append(ctx, alog, rbm.CompressedData); err != nil {
 			return err
 		}
 		indexEntry := codec.NewIndexEntry(flushTimeMinutes, rbm.ActorID, uint64(bitmapChunkOffset), rbm.CompressedSize, rbm.UncompressedSize)
-		if err := l.s3Client.AppendData(ctx, aidx, indexEntry); err != nil {
+		if err := l.s3Client.Append(ctx, aidx, indexEntry); err != nil {
 			return err
 		}
 		bitmapChunkOffset += rbm.CompressedSize
@@ -94,5 +94,5 @@ func (l *Service) flushBuffer(buf *buffer.Buffer) error {
 		return fmt.Errorf("failed to re-encode metadata: %w", err)
 	}
 
-	return l.s3Client.AppendData(ctx, tidx, encodedMeta)
+	return l.s3Client.Upload(ctx, tidx, encodedMeta)
 }

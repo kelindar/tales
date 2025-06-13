@@ -26,7 +26,7 @@ func TestS3ClientWithMock(t *testing.T) {
 		data := []byte("Hello, S3!")
 
 		// Upload data
-		err := client.AppendData(ctx, key, data)
+		err := client.Append(ctx, key, data)
 		assert.NoError(t, err)
 
 		// Verify it exists in mock server
@@ -35,7 +35,7 @@ func TestS3ClientWithMock(t *testing.T) {
 		assert.Equal(t, data, storedData)
 
 		// Download data back
-		downloadedData, err := client.DownloadData(ctx, key)
+		downloadedData, err := client.Download(ctx, key)
 		assert.NoError(t, err)
 		assert.Equal(t, data, downloadedData)
 	})
@@ -46,16 +46,16 @@ func TestS3ClientWithMock(t *testing.T) {
 
 		// First upload
 		data1 := []byte("First part")
-		err := client.AppendData(ctx, key, data1)
+		err := client.Append(ctx, key, data1)
 		assert.NoError(t, err)
 
 		// Append more data
 		data2 := []byte(" Second part")
-		err = client.AppendData(ctx, key, data2)
+		err = client.Append(ctx, key, data2)
 		assert.NoError(t, err)
 
 		// Download and verify combined data
-		combined, err := client.DownloadData(ctx, key)
+		combined, err := client.Download(ctx, key)
 		assert.NoError(t, err)
 		assert.Equal(t, "First part Second part", string(combined))
 	})
@@ -66,11 +66,11 @@ func TestS3ClientWithMock(t *testing.T) {
 		data := []byte("New file content")
 
 		// Append to non-existent file should create it
-		err := client.AppendData(ctx, key, data)
+		err := client.Append(ctx, key, data)
 		assert.NoError(t, err)
 
 		// Verify file was created
-		downloaded, err := client.DownloadData(ctx, key)
+		downloaded, err := client.Download(ctx, key)
 		assert.NoError(t, err)
 		assert.Equal(t, data, downloaded)
 	})
@@ -81,7 +81,7 @@ func TestS3ClientWithMock(t *testing.T) {
 		data := []byte("0123456789ABCDEF")
 
 		// Upload test data
-		err := client.AppendData(ctx, key, data)
+		err := client.Append(ctx, key, data)
 		assert.NoError(t, err)
 
 		// Download range (bytes 5-9)
@@ -100,39 +100,13 @@ func TestS3ClientWithMock(t *testing.T) {
 		assert.Equal(t, "CDEF", string(rangeData))
 	})
 
-	t.Run("DownloadTail", func(t *testing.T) {
-		ctx := context.Background()
-		key := "tail-test.txt"
-		data := []byte("This is a test file for tail download functionality")
-		// Length: 52 characters
-
-		// Upload test data
-		err := client.AppendData(ctx, key, data)
-		assert.NoError(t, err)
-
-		// Download last 10 bytes
-		tailData, err := client.DownloadTail(ctx, key, 10)
-		assert.NoError(t, err)
-		assert.Equal(t, "ctionality", string(tailData)) // Last 10 chars
-
-		// Download last 20 bytes
-		tailData, err = client.DownloadTail(ctx, key, 20)
-		assert.NoError(t, err)
-		assert.Equal(t, "wnload functionality", string(tailData)) // Last 20 chars
-
-		// Download more bytes than file size
-		tailData, err = client.DownloadTail(ctx, key, 1000)
-		assert.NoError(t, err)
-		assert.Equal(t, data, tailData)
-	})
-
 	t.Run("ObjectExists", func(t *testing.T) {
 		ctx := context.Background()
 		existingKey := "existing-file.txt"
 		nonExistentKey := "non-existent-file.txt"
 
 		// Upload a file
-		err := client.AppendData(ctx, existingKey, []byte("test"))
+		err := client.Append(ctx, existingKey, []byte("test"))
 		assert.NoError(t, err)
 
 		// Check existing file
@@ -152,11 +126,11 @@ func TestS3ClientWithMock(t *testing.T) {
 		data := []byte("This file has exactly 32 chars!")
 
 		// Upload test data
-		err := client.AppendData(ctx, key, data)
+		err := client.Append(ctx, key, data)
 		assert.NoError(t, err)
 
 		// Get object size
-		size, err := client.GetObjectSize(ctx, key)
+		size, err := client.ObjectSize(ctx, key)
 		assert.NoError(t, err)
 		assert.Equal(t, int64(len(data)), size)
 		assert.Greater(t, size, int64(0)) // Should be positive
@@ -167,7 +141,7 @@ func TestS3ClientWithMock(t *testing.T) {
 		key := "does-not-exist.txt"
 
 		// Try to download non-existent file
-		_, err := client.DownloadData(ctx, key)
+		_, err := client.Download(ctx, key)
 		assert.Error(t, err)
 
 		// Should be an S3 operation error
@@ -181,7 +155,7 @@ func TestS3ClientWithMock(t *testing.T) {
 		key := "does-not-exist.txt"
 
 		// Try to get size of non-existent file
-		_, err := client.GetObjectSize(ctx, key)
+		_, err := client.ObjectSize(ctx, key)
 		assert.Error(t, err)
 
 		// Should be an S3 operation error
@@ -207,7 +181,7 @@ func TestS3ClientKeyPrefixing(t *testing.T) {
 		data := []byte("test data")
 
 		// Upload data
-		err = client.AppendData(ctx, key, data)
+		err = client.Append(ctx, key, data)
 		assert.NoError(t, err)
 
 		// Verify it's stored with prefix
@@ -216,7 +190,7 @@ func TestS3ClientKeyPrefixing(t *testing.T) {
 		assert.Equal(t, data, storedData)
 
 		// Download should work without specifying prefix
-		downloaded, err := client.DownloadData(ctx, key)
+		downloaded, err := client.Download(ctx, key)
 		assert.NoError(t, err)
 		assert.Equal(t, data, downloaded)
 	})
@@ -232,7 +206,7 @@ func TestS3ClientKeyPrefixing(t *testing.T) {
 		data := []byte("no prefix data")
 
 		// Upload data
-		err = client.AppendData(ctx, key, data)
+		err = client.Append(ctx, key, data)
 		assert.NoError(t, err)
 
 		// Verify it's stored without prefix
@@ -265,7 +239,7 @@ func TestMockServerDirectly(t *testing.T) {
 		}
 
 		for key, data := range files {
-			err := client.AppendData(ctx, key, data)
+			err := client.Append(ctx, key, data)
 			assert.NoError(t, err)
 		}
 
@@ -292,7 +266,7 @@ func TestMockServerDirectly(t *testing.T) {
 		key := "direct-test.txt"
 		data := []byte("direct access test")
 
-		err = client.AppendData(ctx, key, data)
+		err = client.Append(ctx, key, data)
 		assert.NoError(t, err)
 
 		// Access directly via mock server

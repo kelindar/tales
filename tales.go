@@ -113,9 +113,10 @@ func (l *Service) Query(actor uint32, from, to time.Time) iter.Seq2[time.Time, s
 			return
 		}
 
-		// Query both memory and history
-		l.queryMemory(actor, from, to, yield)
+		// Query both memory and history.
+		// Query history first, then memory, to ensure chronological order (past to now).
 		l.queryHistory(context.Background(), actor, from, to, yield)
+		l.queryMemory(actor, from, to, yield)
 	}
 }
 
@@ -187,4 +188,11 @@ func (l *Service) run(ctx context.Context) {
 			return
 		}
 	}
+}
+
+// flushBuffer flushes the buffer and waits (for testing).
+func (l *Service) flush() {
+	done := make(chan struct{})
+	l.commands <- flushCmd{done: done}
+	<-done
 }

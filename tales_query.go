@@ -70,7 +70,7 @@ func (l *Service) queryDay(ctx context.Context, actor uint32, day time.Time, fro
 	}
 
 	// 4. Download metadata file to get chunk information
-	metaBytes, err := l.s3Client.DownloadData(ctx, tidx)
+	metaBytes, err := l.s3Client.Download(ctx, tidx)
 	if err != nil {
 		return true // If meta file doesn't exist, there's no data for this day.
 	}
@@ -86,7 +86,7 @@ func (l *Service) queryDay(ctx context.Context, actor uint32, day time.Time, fro
 
 // loadIndexFile downloads and parses the index file.
 func (l *Service) loadIndexFile(ctx context.Context, key string) ([]codec.IndexEntry, error) {
-	data, err := l.s3Client.DownloadData(ctx, key)
+	data, err := l.s3Client.Download(ctx, key)
 	if err != nil {
 		return nil, err
 	}

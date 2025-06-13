@@ -36,13 +36,9 @@ func TestIntegration(t *testing.T) {
 	// Log some messages
 	logger.Log("hello world 1", 1)
 	logger.Log("hello world 2", 2)
+	logger.flush()
 	logger.Log("hello world 3", 1, 3)
-
-	// Wait for flush to happen
-	done := make(chan struct{})
-	logger.commands <- flushCmd{done: done}
-	<-done // wait for flush to complete
-
+	logger.flush()
 	logger.Log("hello world 4", 1, 2)
 
 	from := time.Now().Add(-1 * time.Hour)

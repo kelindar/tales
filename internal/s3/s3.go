@@ -26,12 +26,12 @@ type Config struct {
 
 // Client interface abstracts S3 operations for easier testing and mocking
 type Client interface {
-	AppendData(ctx context.Context, key string, data []byte) error
-	DownloadData(ctx context.Context, key string) ([]byte, error)
+	Upload(ctx context.Context, key string, data []byte) error
+	Append(ctx context.Context, key string, data []byte) error
+	Download(ctx context.Context, key string) ([]byte, error)
 	DownloadRange(ctx context.Context, key string, start, end int64) ([]byte, error)
-	DownloadTail(ctx context.Context, key string, tailSize int64) ([]byte, error)
 	ObjectExists(ctx context.Context, key string) (bool, error)
-	GetObjectSize(ctx context.Context, key string) (int64, error)
+	ObjectSize(ctx context.Context, key string) (int64, error)
 }
 
 // ErrS3Operation represents an S3 operation error.
@@ -84,9 +84,9 @@ func (c *S3Client) buildKey(key string) string {
 	return strings.TrimSuffix(c.prefix, "/") + "/" + key
 }
 
-// AppendData appends data to an existing S3 object using a multipart upload.
+// Append appends data to an existing S3 object using a multipart upload.
 // If the object does not exist it will be created.
-func (c *S3Client) AppendData(ctx context.Context, key string, data []byte) error {
+func (c *S3Client) Append(ctx context.Context, key string, data []byte) error {
 	fullKey := c.buildKey(key)
 
 	exists, err := c.ObjectExists(ctx, key)
@@ -186,8 +186,8 @@ func (c *S3Client) AppendData(ctx context.Context, key string, data []byte) erro
 	return nil
 }
 
-// DownloadData downloads data from S3 with retry logic.
-func (c *S3Client) DownloadData(ctx context.Context, key string) ([]byte, error) {
+// Download downloads data from S3 with retry logic.
+func (c *S3Client) Download(ctx context.Context, key string) ([]byte, error) {
 	fullKey := c.buildKey(key)
 
 	for attempt := 0; attempt <= c.retryAttempts; attempt++ {
@@ -242,35 +242,6 @@ func (c *S3Client) DownloadRange(ctx context.Context, key string, start, end int
 	return nil, nil
 }
 
-// DownloadTail downloads the tail of a file (last N bytes).
-func (c *S3Client) DownloadTail(ctx context.Context, key string, tailSize int64) ([]byte, error) {
-	fullKey := c.buildKey(key)
-	rangeHeader := fmt.Sprintf("bytes=-%d", tailSize)
-
-	for attempt := 0; attempt <= c.retryAttempts; attempt++ {
-		resp, err := c.client.GetObject(ctx, &s3.GetObjectInput{
-			Bucket: aws.String(c.bucket),
-			Key:    aws.String(fullKey),
-			Range:  aws.String(rangeHeader),
-		})
-
-		if err == nil {
-			defer resp.Body.Close()
-			data, readErr := io.ReadAll(resp.Body)
-			if readErr != nil {
-				return nil, ErrS3Operation{Operation: "read tail response", Err: readErr}
-			}
-			return data, nil
-		}
-
-		if attempt == c.retryAttempts {
-			return nil, ErrS3Operation{Operation: "download tail", Err: err}
-		}
-	}
-
-	return nil, nil
-}
-
 // ObjectExists checks if an object exists in S3.
 func (c *S3Client) ObjectExists(ctx context.Context, key string) (bool, error) {
 	fullKey := c.buildKey(key)
@@ -299,8 +270,8 @@ func (c *S3Client) ObjectExists(ctx context.Context, key string) (bool, error) {
 	return true, nil
 }
 
-// GetObjectSize returns the size of an object in S3.
-func (c *S3Client) GetObjectSize(ctx context.Context, key string) (int64, error) {
+// ObjectSize returns the size of an object in S3.
+func (c *S3Client) ObjectSize(ctx context.Context, key string) (int64, error) {
 	fullKey := c.buildKey(key)
 
 	resp, err := c.client.HeadObject(ctx, &s3.HeadObjectInput{
@@ -313,4 +284,25 @@ func (c *S3Client) GetObjectSize(ctx context.Context, key string) (int64, error)
 	}
 
 	return *resp.ContentLength, nil
+}
+
+// Upload overwrites an S3 object with the given data.
+func (c *S3Client) Upload(ctx context.Context, key string, data []byte) error {
+	fullKey := c.buildKey(key)
+
+	for attempt := 0; attempt <= c.retryAttempts; attempt++ {
+		_, err := c.client.PutObject(ctx, &s3.PutObjectInput{
+			Bucket: aws.String(c.bucket),
+			Key:    aws.String(fullKey),
+			Body:   bytes.NewReader(data),
+		})
+		if err == nil {
+			return nil // Success
+		}
+		if attempt == c.retryAttempts {
+			return ErrS3Operation{Operation: "overwrite object (put)", Err: err}
+		}
+		// Consider adding a small delay here for retries if appropriate for the application
+	}
+	return nil // Should be unreachable if retryAttempts >= 0
 }
