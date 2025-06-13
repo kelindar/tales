@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kelindar/threads/internal/codec"
 	"github.com/kelindar/threads/internal/s3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -124,50 +123,5 @@ func TestSequenceIDGeneration(t *testing.T) {
 		// IDs should be different and day start should be updated
 		assert.NotEqual(t, id1, id2)
 		assert.Equal(t, seqGen.Day(), dayOf(tomorrow))
-	})
-}
-
-func TestFileFormats(t *testing.T) {
-	t.Run("LogEntryEncoding", func(t *testing.T) {
-		// Create entry using codec
-		entry, err := codec.NewLogEntry(12345, "Test message", []uint32{100, 200, 300})
-		require.NoError(t, err)
-
-		// Test accessors
-		assert.Equal(t, uint32(12345), entry.ID())
-		assert.Equal(t, "Test message", entry.Text())
-		assert.Equal(t, []uint32{100, 200, 300}, entry.Actors())
-	})
-
-	t.Run("TailMetadataEncoding", func(t *testing.T) {
-		chunks := []codec.ChunkEntry{
-			codec.NewChunkEntry(0, 100, 200),
-			codec.NewChunkEntry(100, 150, 300),
-		}
-
-		metadata := codec.NewMetadata(time.Now())
-		metadata.Chunks = chunks
-		metadata.ChunkCount = 2
-
-		// Encode
-		encoded, err := codec.EncodeMetadata(metadata)
-		require.NoError(t, err)
-
-		// The encoded data should be valid JSON containing the magic string
-		assert.Contains(t, string(encoded), "TAIL")
-
-		// Test that we can decode it back
-		decoded, err := codec.DecodeMetadata(encoded)
-		require.NoError(t, err)
-		assert.Equal(t, metadata.Magic, decoded.Magic)
-		assert.Equal(t, metadata.Version, decoded.Version)
-		assert.Equal(t, metadata.ChunkCount, decoded.ChunkCount)
-
-		// Test chunk accessors
-		for i, chunk := range chunks {
-			assert.Equal(t, uint64(i*100), chunk.Offset())
-			assert.Equal(t, uint32(100+i*50), chunk.CompressedSize())
-			assert.Equal(t, uint32(200+i*100), chunk.UncompressedSize())
-		}
 	})
 }

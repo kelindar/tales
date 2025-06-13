@@ -7,8 +7,6 @@ import (
 
 // Metadata represents the metadata structure for log files.
 type Metadata struct {
-	Magic           string       `json:"magic"`
-	Version         uint32       `json:"version"`
 	DayStart        int64        `json:"day_start"`
 	ChunkCount      uint32       `json:"chunk_count"`
 	Chunks          []ChunkEntry `json:"chunks"`
@@ -20,8 +18,6 @@ type Metadata struct {
 // NewMetadata creates a new metadata instance with default values.
 func NewMetadata(dayStart time.Time) *Metadata {
 	return &Metadata{
-		Magic:    "TAIL",
-		Version:  1,
 		DayStart: dayStart.UnixNano(),
 	}
 }

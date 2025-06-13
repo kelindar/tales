@@ -28,13 +28,13 @@ func (l *Logger) queryS3Day(ctx context.Context, actor uint32, dayStart time.Tim
 	dateString := formatDate(dayStart)
 
 	// Build S3 keys
-	logKey := fmt.Sprintf("%s/threads.log", dateString)
-	metaKey := fmt.Sprintf("%s/threads.meta", dateString)
-	bitmapKey := fmt.Sprintf("%s/threads.rbm", dateString)
-	indexKey := fmt.Sprintf("%s/threads.idx", dateString)
+	tlog := fmt.Sprintf("%s/threads.log", dateString)
+	tidx := fmt.Sprintf("%s/threads.idx", dateString)
+	alog := fmt.Sprintf("%s/actors.log", dateString)
+	aidx := fmt.Sprintf("%s/actors.idx", dateString)
 
 	// 1. Download and parse index file
-	indexEntries, err := l.downloadIndexEntries(ctx, indexKey)
+	indexEntries, err := l.downloadIndexEntries(ctx, aidx)
 	if err != nil {
 		// If index file doesn't exist, skip this day
 		return true
@@ -47,7 +47,7 @@ func (l *Logger) queryS3Day(ctx context.Context, actor uint32, dayStart time.Tim
 	}
 
 	// 3. Download and merge bitmap chunks
-	mergedBitmap, err := l.downloadAndMergeBitmaps(ctx, bitmapKey, relevantEntries)
+	mergedBitmap, err := l.downloadAndMergeBitmaps(ctx, alog, relevantEntries)
 	if err != nil {
 		return true // Skip on error
 	}
@@ -57,7 +57,7 @@ func (l *Logger) queryS3Day(ctx context.Context, actor uint32, dayStart time.Tim
 	}
 
 	// 4. Download metadata file to get chunk information
-	metaBytes, err := l.s3Client.DownloadData(ctx, metaKey)
+	metaBytes, err := l.s3Client.DownloadData(ctx, tidx)
 	if err != nil {
 		return true // If meta file doesn't exist, there's no data for this day.
 	}
@@ -68,7 +68,7 @@ func (l *Logger) queryS3Day(ctx context.Context, actor uint32, dayStart time.Tim
 	}
 
 	// 5. Group sequence IDs by log chunks and query
-	return l.queryLogChunks(ctx, logKey, tailMetadata, mergedBitmap, dayStart, from, to, yield)
+	return l.queryLogChunks(ctx, tlog, tailMetadata, mergedBitmap, dayStart, from, to, yield)
 }
 
 // downloadIndexEntries downloads and parses the index file.

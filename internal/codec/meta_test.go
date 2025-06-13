@@ -13,8 +13,6 @@ func TestMetadata(t *testing.T) {
 		dayStart := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 		meta := NewMetadata(dayStart)
 
-		assert.Equal(t, "TAIL", meta.Magic)
-		assert.Equal(t, uint32(1), meta.Version)
 		assert.Equal(t, dayStart.UnixNano(), meta.DayStart)
 		assert.Equal(t, uint32(0), meta.ChunkCount)
 		assert.Empty(t, meta.Chunks)
@@ -61,9 +59,6 @@ func TestMetadata(t *testing.T) {
 
 		// Verify it's valid JSON by checking it contains expected fields
 		jsonStr := string(encoded)
-		assert.Contains(t, jsonStr, "TAIL")
-		assert.Contains(t, jsonStr, "magic")
-		assert.Contains(t, jsonStr, "version")
 		assert.Contains(t, jsonStr, "chunks")
 
 		// Decode back
@@ -71,8 +66,6 @@ func TestMetadata(t *testing.T) {
 		require.NoError(t, err)
 
 		// Verify all fields match
-		assert.Equal(t, original.Magic, decoded.Magic)
-		assert.Equal(t, original.Version, decoded.Version)
 		assert.Equal(t, original.DayStart, decoded.DayStart)
 		assert.Equal(t, original.ChunkCount, decoded.ChunkCount)
 		assert.Equal(t, original.TailSize, decoded.TailSize)
