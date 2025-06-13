@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/kelindar/threads/internal/codec"
+	"github.com/kelindar/threads/internal/seq"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -108,4 +109,23 @@ func TestBuffer_Query(t *testing.T) {
 		count++
 	}
 	assert.Equal(t, 0, count)
+}
+
+func TestBuffer_QueryInclusiveTo(t *testing.T) {
+	c, _ := codec.NewCodec()
+	buf := New(10, c)
+	dayStart := time.Now().UTC().Truncate(24 * time.Hour)
+	sg := seq.NewSequence(dayStart)
+
+	ts := dayStart.Add(10*time.Minute + 30*time.Second)
+	id := sg.Next(ts)
+	entry, _ := codec.NewLogEntry(id, "test", []uint32{1})
+	buf.Add(entry)
+
+	results := buf.Query(1, dayStart, dayStart, ts)
+	count := 0
+	for range results {
+		count++
+	}
+	assert.Equal(t, 1, count)
 }
