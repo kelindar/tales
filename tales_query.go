@@ -10,8 +10,21 @@ import (
 	"github.com/kelindar/threads/internal/seq"
 )
 
-// queryHistorical implements the S3 historical query logic.
-func (l *Service) queryHistorical(ctx context.Context, actor uint32, from, to time.Time, yield func(time.Time, string) bool) {
+// queryMemory queries the in-memory buffer for entries.
+func (l *Service) queryMemory(actor uint32, from, to time.Time, yield func(time.Time, string) bool) {
+	ret := make(chan []codec.LogEntry, 1)
+	l.commands <- queryCmd{actor: actor, from: from, to: to, ret: ret}
+
+	day := seq.DayOf(from)
+	for _, entry := range <-ret {
+		if !yield(entry.Time(day), entry.Text()) {
+			return
+		}
+	}
+}
+
+// queryHistory implements the S3 historical query logic.
+func (l *Service) queryHistory(ctx context.Context, actor uint32, from, to time.Time, yield func(time.Time, string) bool) {
 	// Query each day in the time range
 	current := seq.DayOf(from)
 	end := seq.DayOf(to).Add(24 * time.Hour)
@@ -109,7 +122,6 @@ func (l *Service) filterEntries(entries []codec.IndexEntry, actor uint32, day, f
 
 // loadBitmap downloads and decodes a single bitmap for a given index entry.
 func (l *Service) loadBitmap(ctx context.Context, key string, entry codec.IndexEntry) (*roaring.Bitmap, error) {
-	// Download bitmap chunk using byte range
 	end := int64(entry.Offset() + uint64(entry.CompressedSize()) - 1)
 	compressed, err := l.s3Client.DownloadRange(ctx, key, int64(entry.Offset()), end)
 	if err != nil {
@@ -157,7 +169,6 @@ func (l *Service) queryChunks(ctx context.Context, logKey string, meta *codec.Me
 
 // loadLogChunk downloads, decompresses, and parses a log chunk.
 func (l *Service) loadLogChunk(ctx context.Context, logKey string, chunk codec.ChunkEntry) ([]codec.LogEntry, error) {
-	// Download chunk using byte range
 	end := int64(chunk.Offset() + uint64(chunk.CompressedSize()) - 1)
 	compressed, err := l.s3Client.DownloadRange(ctx, logKey, int64(chunk.Offset()), end)
 	if err != nil {

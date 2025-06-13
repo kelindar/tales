@@ -113,11 +113,9 @@ func (l *Service) Query(actor uint32, from, to time.Time) iter.Seq2[time.Time, s
 			return
 		}
 
-		// Query memory buffer first (most recent data)
-		l.queryMemoryBuffer(actor, from, to, yield)
-
-		// Query S3 for historical data
-		l.queryHistorical(context.Background(), actor, from, to, yield)
+		// Query both memory and history
+		l.queryMemory(actor, from, to, yield)
+		l.queryHistory(context.Background(), actor, from, to, yield)
 	}
 }
 
@@ -133,7 +131,7 @@ func (l *Service) Close() error {
 
 	// Close the codec
 	l.codec.Close()
-
+	l.cancel()
 	return nil
 }
 
@@ -185,18 +183,7 @@ func (l *Service) run(ctx context.Context) {
 
 		case <-ticker.C:
 			l.flushBuffer(buf)
-		}
-	}
-}
-
-// queryMemoryBuffer queries the in-memory buffer for entries.
-func (l *Service) queryMemoryBuffer(actor uint32, from, to time.Time, yield func(time.Time, string) bool) {
-	ret := make(chan []codec.LogEntry, 1)
-	dayStart := seq.DayOf(from)
-	l.commands <- queryCmd{actor: actor, from: from, to: to, ret: ret}
-
-	for _, entry := range <-ret {
-		if !yield(entry.Time(dayStart), entry.Text()) {
+		case <-ctx.Done():
 			return
 		}
 	}
