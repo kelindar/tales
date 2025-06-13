@@ -54,24 +54,31 @@ func TestIntegration(t *testing.T) {
 		_ = timestamp // ignore timestamp for this test
 		results1 = append(results1, msg)
 	}
-	assert.Contains(t, results1, "hello world 1")
-	assert.Contains(t, results1, "hello world 3")
-	assert.Contains(t, results1, "hello world 4")
+
+	assert.Equal(t, []string{
+		"hello world 1",
+		"hello world 3",
+		"hello world 4",
+	}, results1)
 
 	// Query for actor 2
 	var results2 []string
 	for _, msg := range logger.Query(2, from, to) {
 		results2 = append(results2, msg)
 	}
-	assert.Contains(t, results2, "hello world 2")
-	assert.Contains(t, results2, "hello world 4")
+	assert.Equal(t, []string{
+		"hello world 2",
+		"hello world 4",
+	}, results2)
 
 	// Query for actor 3
 	var results3 []string
 	for _, msg := range logger.Query(3, from, to) {
 		results3 = append(results3, msg)
 	}
-	assert.Contains(t, results3, "hello world 3")
+	assert.Equal(t, []string{
+		"hello world 3",
+	}, results3)
 
 	// Query for actor 4 (no logs)
 	var results4 []string
