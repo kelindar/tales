@@ -3,9 +3,10 @@ package buffer
 import (
 	"time"
 
+	"iter"
+
 	"github.com/RoaringBitmap/roaring/v2"
 	"github.com/kelindar/threads/internal/codec"
-	"iter"
 )
 
 // Buffer represents the in-memory buffer for the current chunk.
@@ -63,49 +64,21 @@ func (b *Buffer) Add(entry codec.LogEntry) bool {
 	return true
 }
 
-// parseEntries parses log entries from raw data.
-func (b *Buffer) parseEntries(data []byte) []codec.LogEntry {
-	var entries []codec.LogEntry
-	buf := data
-
-	for len(buf) > 0 {
-		entry := codec.LogEntry(buf)
-		size := int(entry.Size())
-		if size == 0 || size > len(buf) {
-			break
-		}
-
-		entries = append(entries, entry[:size])
-		buf = buf[size:]
-	}
-
-	return entries
-}
-
 // Query returns entries for a specific actor within a time range.
 func (b *Buffer) Query(actorID uint32, dayStart time.Time, from, to time.Time) iter.Seq[codec.LogEntry] {
 	return func(yield func(codec.LogEntry) bool) {
-		// Get bitmap for this actor
-		bitmap := b.index[actorID]
-		if bitmap == nil {
-			return
-		}
+		t0 := asSequence(from.UTC(), dayStart)
+		t1 := asSequence(to.UTC(), dayStart)
 
-		// Convert time range to sequence ID range (normalize to UTC first)
-		fromSeq := timeToSequenceID(from.UTC(), dayStart)
-		toSeq := timeToSequenceID(to.UTC(), dayStart)
-
-		buffer := b.data
-		for len(buffer) > 0 {
+		for buffer := b.data; len(buffer) > 0; {
 			entry := codec.LogEntry(buffer)
 			size := int(entry.Size())
 			if size == 0 || size > len(buffer) {
 				return
 			}
 
-			sequenceID := entry.ID()
-			if sequenceID >= fromSeq && sequenceID <= toSeq {
-				// Check if this entry contains the actor
+			// Check if this entry contains the actor
+			if id := entry.ID(); id >= t0 && id <= t1 {
 				for _, actor := range entry.Actors() {
 					if actor == actorID {
 						if !yield(entry[:size]) {
@@ -144,11 +117,11 @@ type Flush struct {
 // It returns a deep-copied snapshot so the caller owns the returned slices/maps
 // without needing additional synchronization.
 func (b *Buffer) Flush() (Flush, error) {
-	// Compress raw data
 	compressedData, err := b.codec.Compress(b.data)
 	if err != nil {
 		return Flush{}, err
 	}
+
 	dataCopy := Binary{
 		UncompressedSize: uint32(len(b.data)),
 		CompressedSize:   uint32(len(compressedData)),
@@ -196,10 +169,7 @@ func (b *Buffer) reset() {
 	b.start = time.Now()
 }
 
-// timeToSequenceID converts a time to a sequence ID for range queries.
-func timeToSequenceID(t, dayStart time.Time) uint32 {
-	minutesFromDayStart := uint32(t.Sub(dayStart).Minutes())
-
-	// Use 0 for the counter part since we're doing range comparisons
-	return minutesFromDayStart << 20
+// asSequence converts a time to a sequence ID for range queries.
+func asSequence(t, dayStart time.Time) uint32 {
+	return uint32(t.Sub(dayStart).Minutes()) << 20
 }

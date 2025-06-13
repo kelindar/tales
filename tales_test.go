@@ -31,6 +31,7 @@ func BenchmarkTales(b *testing.B) {
 		logger.Query(1, time.Now().Add(-1*time.Hour), time.Now().Add(1*time.Hour))
 	}
 
+	b.N = count
 	b.ReportMetric(float64(count)/time.Now().Sub(start).Seconds(), "log/s")
 }
 
