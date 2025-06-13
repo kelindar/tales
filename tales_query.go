@@ -3,6 +3,7 @@ package threads
 import (
 	"context"
 	"fmt"
+	"iter"
 	"time"
 
 	"github.com/RoaringBitmap/roaring/v2"
@@ -54,29 +55,24 @@ func (l *Service) queryDay(ctx context.Context, actor uint32, day time.Time, fro
 	}
 
 	// 2. Filter index entries by actor and time range
-	entries = l.filterEntries(entries, actor, day, from, to)
-	if len(entries) == 0 {
+	if entries = l.filterEntries(entries, actor, day, from, to); len(entries) == 0 {
 		return true
 	}
 
 	// 3. Download and merge bitmap chunks
 	bm, err := l.mergeBitmaps(ctx, alog, entries)
-	if err != nil {
+	if err != nil || bm.IsEmpty() {
 		return true // Skip on error
-	}
-
-	if bm.IsEmpty() {
-		return true
 	}
 
 	// 4. Download metadata file to get chunk information
 	metaBytes, err := l.s3Client.Download(ctx, tidx)
-	if err != nil {
+	if err != nil || len(metaBytes) == 0 {
 		return true // If meta file doesn't exist, there's no data for this day.
 	}
 
 	meta, err := codec.DecodeMetadata(metaBytes)
-	if err != nil {
+	if err != nil || meta == nil {
 		return true // Corrupted metadata.
 	}
 
@@ -167,8 +163,31 @@ func (l *Service) queryChunks(ctx context.Context, logKey string, meta *codec.Me
 	return true
 }
 
-// loadLogChunk downloads, decompresses, and parses a log chunk.
-func (l *Service) loadLogChunk(ctx context.Context, logKey string, chunk codec.ChunkEntry) ([]codec.LogEntry, error) {
+// queryChunk queries a specific log chunk for sequence IDs.
+func (l *Service) queryChunk(ctx context.Context, logKey string, chunk codec.ChunkEntry, sids *roaring.Bitmap, day, from, to time.Time, yield func(time.Time, string) bool) bool {
+	entries, err := l.rangeChunks(ctx, logKey, chunk)
+	if err != nil {
+		return true // Skip chunks that fail to process
+	}
+
+	// Filter and yield matching entries
+	for entry := range entries {
+		id := entry.ID()
+		if !sids.Contains(id) {
+			continue
+		}
+
+		ts := seq.TimeOf(id, day)
+		if ts.After(from) && ts.Before(to) && !yield(ts, entry.Text()) {
+			return false // Stop iteration
+		}
+	}
+
+	return true
+}
+
+// rangeChunks downloads, decompresses, and returns an iterator over log entries.
+func (l *Service) rangeChunks(ctx context.Context, logKey string, chunk codec.ChunkEntry) (iter.Seq[codec.LogEntry], error) {
 	end := int64(chunk.Offset() + uint64(chunk.CompressedSize()) - 1)
 	compressed, err := l.s3Client.DownloadRange(ctx, logKey, int64(chunk.Offset()), end)
 	if err != nil {
@@ -176,54 +195,23 @@ func (l *Service) loadLogChunk(ctx context.Context, logKey string, chunk codec.C
 	}
 
 	// Decompress chunk and parse log entries
-	decompressed, err := l.codec.Decompress(compressed)
+	buffer, err := l.codec.Decompress(compressed)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decompress log chunk: %w", err)
 	}
 
-	return l.decodeLogEntries(decompressed)
-}
-
-// queryChunk queries a specific log chunk for sequence IDs.
-func (l *Service) queryChunk(ctx context.Context, logKey string, chunk codec.ChunkEntry, sids *roaring.Bitmap, day, from, to time.Time, yield func(time.Time, string) bool) bool {
-	entries, err := l.loadLogChunk(ctx, logKey, chunk)
-	if err != nil {
-		return true // Skip chunks that fail to process
-	}
-
-	// Filter and yield matching entries
-	for _, entry := range entries {
-		id := entry.ID()
-		if !sids.Contains(id) {
-			continue
-		}
-
-		ts := seq.TimeOf(id, day)
-		if ts.After(from) && ts.Before(to) {
-			if !yield(ts, entry.Text()) {
-				return false // Stop iteration
+	return func(yield func(codec.LogEntry) bool) {
+		for len(buffer) > 4 {
+			entry := codec.LogEntry(buffer)
+			size := entry.Size()
+			if size == 0 || uint32(len(buffer)) < size {
+				return // Invalid size or not enough data, stop iteration
 			}
+
+			if !yield(entry[:size]) {
+				return // Stop iteration if yield returns false
+			}
+			buffer = buffer[size:]
 		}
-	}
-
-	return true
-}
-
-// decodeLogEntries parses log entries from raw decompressed data.
-func (l *Service) decodeLogEntries(data []byte) ([]codec.LogEntry, error) {
-	var entries []codec.LogEntry
-	buf := data
-
-	for len(buf) > 4 {
-		entry := codec.LogEntry(buf)
-		size := entry.Size()
-		if size == 0 || uint32(len(buf)) < size {
-			break // Invalid size or not enough data
-		}
-
-		entries = append(entries, entry[:size])
-		buf = buf[size:]
-	}
-
-	return entries, nil
+	}, nil
 }
