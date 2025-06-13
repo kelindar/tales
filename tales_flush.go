@@ -13,7 +13,7 @@ import (
 )
 
 // flushBuffer flushes the current buffer to S3 using a separate metadata file.
-func (l *Logger) flushBuffer(buf *buffer.Buffer) error {
+func (l *Service) flushBuffer(buf *buffer.Buffer) error {
 	ctx := context.Background()
 
 	if buf.Size() == 0 {

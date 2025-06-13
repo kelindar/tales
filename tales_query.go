@@ -11,7 +11,7 @@ import (
 )
 
 // queryHistorical implements the S3 historical query logic.
-func (l *Logger) queryHistorical(ctx context.Context, actor uint32, from, to time.Time, yield func(time.Time, string) bool) {
+func (l *Service) queryHistorical(ctx context.Context, actor uint32, from, to time.Time, yield func(time.Time, string) bool) {
 	// Query each day in the time range
 	current := seq.DayOf(from)
 	end := seq.DayOf(to).Add(24 * time.Hour)
@@ -25,7 +25,7 @@ func (l *Logger) queryHistorical(ctx context.Context, actor uint32, from, to tim
 }
 
 // queryDay queries S3 data for a specific day.
-func (l *Logger) queryDay(ctx context.Context, actor uint32, day time.Time, from, to time.Time, yield func(time.Time, string) bool) bool {
+func (l *Service) queryDay(ctx context.Context, actor uint32, day time.Time, from, to time.Time, yield func(time.Time, string) bool) bool {
 	date := seq.FormatDate(day)
 
 	// Build S3 keys
@@ -72,7 +72,7 @@ func (l *Logger) queryDay(ctx context.Context, actor uint32, day time.Time, from
 }
 
 // loadIndexFile downloads and parses the index file.
-func (l *Logger) loadIndexFile(ctx context.Context, key string) ([]codec.IndexEntry, error) {
+func (l *Service) loadIndexFile(ctx context.Context, key string) ([]codec.IndexEntry, error) {
 	data, err := l.s3Client.DownloadData(ctx, key)
 	if err != nil {
 		return nil, err
@@ -93,7 +93,7 @@ func (l *Logger) loadIndexFile(ctx context.Context, key string) ([]codec.IndexEn
 }
 
 // filterEntries filters index entries by actor and time range.
-func (l *Logger) filterEntries(entries []codec.IndexEntry, actor uint32, day, from, to time.Time) []codec.IndexEntry {
+func (l *Service) filterEntries(entries []codec.IndexEntry, actor uint32, day, from, to time.Time) []codec.IndexEntry {
 	out := make([]codec.IndexEntry, 0, len(entries))
 	fromMin := uint32(from.Sub(day).Minutes())
 	toMin := uint32(to.Sub(day).Minutes())
@@ -108,7 +108,7 @@ func (l *Logger) filterEntries(entries []codec.IndexEntry, actor uint32, day, fr
 }
 
 // loadBitmap downloads and decodes a single bitmap for a given index entry.
-func (l *Logger) loadBitmap(ctx context.Context, key string, entry codec.IndexEntry) (*roaring.Bitmap, error) {
+func (l *Service) loadBitmap(ctx context.Context, key string, entry codec.IndexEntry) (*roaring.Bitmap, error) {
 	// Download bitmap chunk using byte range
 	end := int64(entry.Offset() + uint64(entry.CompressedSize()) - 1)
 	compressed, err := l.s3Client.DownloadRange(ctx, key, int64(entry.Offset()), end)
@@ -131,7 +131,7 @@ func (l *Logger) loadBitmap(ctx context.Context, key string, entry codec.IndexEn
 }
 
 // mergeBitmaps downloads bitmap chunks and merges them.
-func (l *Logger) mergeBitmaps(ctx context.Context, key string, entries []codec.IndexEntry) (*roaring.Bitmap, error) {
+func (l *Service) mergeBitmaps(ctx context.Context, key string, entries []codec.IndexEntry) (*roaring.Bitmap, error) {
 	bm := roaring.New()
 	for _, e := range entries {
 		bitmap, err := l.loadBitmap(ctx, key, e)
@@ -145,7 +145,7 @@ func (l *Logger) mergeBitmaps(ctx context.Context, key string, entries []codec.I
 }
 
 // queryChunks queries log chunks for specific sequence IDs.
-func (l *Logger) queryChunks(ctx context.Context, logKey string, meta *codec.Metadata, bm *roaring.Bitmap, day, from, to time.Time, yield func(time.Time, string) bool) bool {
+func (l *Service) queryChunks(ctx context.Context, logKey string, meta *codec.Metadata, bm *roaring.Bitmap, day, from, to time.Time, yield func(time.Time, string) bool) bool {
 	for _, chunk := range meta.Chunks {
 		if !l.queryChunk(ctx, logKey, chunk, bm, day, from, to, yield) {
 			return false // Yield returned false, stop.
@@ -156,7 +156,7 @@ func (l *Logger) queryChunks(ctx context.Context, logKey string, meta *codec.Met
 }
 
 // loadLogChunk downloads, decompresses, and parses a log chunk.
-func (l *Logger) loadLogChunk(ctx context.Context, logKey string, chunk codec.ChunkEntry) ([]codec.LogEntry, error) {
+func (l *Service) loadLogChunk(ctx context.Context, logKey string, chunk codec.ChunkEntry) ([]codec.LogEntry, error) {
 	// Download chunk using byte range
 	end := int64(chunk.Offset() + uint64(chunk.CompressedSize()) - 1)
 	compressed, err := l.s3Client.DownloadRange(ctx, logKey, int64(chunk.Offset()), end)
@@ -174,7 +174,7 @@ func (l *Logger) loadLogChunk(ctx context.Context, logKey string, chunk codec.Ch
 }
 
 // queryChunk queries a specific log chunk for sequence IDs.
-func (l *Logger) queryChunk(ctx context.Context, logKey string, chunk codec.ChunkEntry, sids *roaring.Bitmap, day, from, to time.Time, yield func(time.Time, string) bool) bool {
+func (l *Service) queryChunk(ctx context.Context, logKey string, chunk codec.ChunkEntry, sids *roaring.Bitmap, day, from, to time.Time, yield func(time.Time, string) bool) bool {
 	entries, err := l.loadLogChunk(ctx, logKey, chunk)
 	if err != nil {
 		return true // Skip chunks that fail to process
@@ -199,7 +199,7 @@ func (l *Logger) queryChunk(ctx context.Context, logKey string, chunk codec.Chun
 }
 
 // decodeLogEntries parses log entries from raw decompressed data.
-func (l *Logger) decodeLogEntries(data []byte) ([]codec.LogEntry, error) {
+func (l *Service) decodeLogEntries(data []byte) ([]codec.LogEntry, error) {
 	var entries []codec.LogEntry
 	buf := data
 

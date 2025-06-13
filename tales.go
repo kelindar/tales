@@ -34,8 +34,8 @@ type flushCmd struct {
 	done chan struct{}
 }
 
-// Logger provides high-performance, memory-efficient logging and querying of game events.
-type Logger struct {
+// Service provides high-performance, memory-efficient logging and querying.
+type Service struct {
 	config   Config
 	s3Client s3.Client
 	codec    *codec.Codec
@@ -46,7 +46,7 @@ type Logger struct {
 }
 
 // New creates a new Logger instance with the given configuration.
-func New(config Config) (*Logger, error) {
+func New(config Config) (*Service, error) {
 	// Set defaults and validate configuration
 	config.setDefaults()
 	if err := config.validate(); err != nil {
@@ -72,7 +72,7 @@ func New(config Config) (*Logger, error) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	logger := &Logger{
+	logger := &Service{
 		config:   config,
 		s3Client: s3Client,
 		codec:    codecInstance,
@@ -88,7 +88,7 @@ func New(config Config) (*Logger, error) {
 }
 
 // Log adds a log entry with the given text and actors.
-func (l *Logger) Log(text string, actors ...uint32) error {
+func (l *Service) Log(text string, actors ...uint32) error {
 	switch {
 	case len(text) == 0:
 		return fmt.Errorf("empty log entry")
@@ -107,7 +107,7 @@ func (l *Logger) Log(text string, actors ...uint32) error {
 }
 
 // Query returns an iterator over log entries for the specified actor and time range.
-func (l *Logger) Query(actor uint32, from, to time.Time) iter.Seq2[time.Time, string] {
+func (l *Service) Query(actor uint32, from, to time.Time) iter.Seq2[time.Time, string] {
 	return func(yield func(time.Time, string) bool) {
 		if atomic.LoadInt32(&l.closed) != 0 {
 			return
@@ -122,7 +122,7 @@ func (l *Logger) Query(actor uint32, from, to time.Time) iter.Seq2[time.Time, st
 }
 
 // Close gracefully shuts down the logger, flushing any remaining data.
-func (l *Logger) Close() error {
+func (l *Service) Close() error {
 	if !atomic.CompareAndSwapInt32(&l.closed, 0, 1) {
 		return fmt.Errorf("logger already closed")
 	}
@@ -138,7 +138,7 @@ func (l *Logger) Close() error {
 }
 
 // run is the main loop for the logger, handling all state modifications.
-func (l *Logger) run(ctx context.Context) {
+func (l *Service) run(ctx context.Context) {
 	defer l.wg.Done()
 
 	buf := buffer.New(l.config.BufferSize, l.codec)
@@ -190,7 +190,7 @@ func (l *Logger) run(ctx context.Context) {
 }
 
 // queryMemoryBuffer queries the in-memory buffer for entries.
-func (l *Logger) queryMemoryBuffer(actor uint32, from, to time.Time, yield func(time.Time, string) bool) {
+func (l *Service) queryMemoryBuffer(actor uint32, from, to time.Time, yield func(time.Time, string) bool) {
 	ret := make(chan []codec.LogEntry, 1)
 	dayStart := seq.DayOf(from)
 	l.commands <- queryCmd{actor: actor, from: from, to: to, ret: ret}

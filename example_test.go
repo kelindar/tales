@@ -55,27 +55,3 @@ func Example() {
 	// - Player gained 100 XP
 	// Total events: 4
 }
-
-// ExampleQuery demonstrates querying historical data
-func ExampleLogger_Query() {
-	// Assume logger is already created and has historical data
-	logger := &Logger{} // This would be a real logger instance
-
-	// Query events for the last 24 hours
-	from := time.Now().Add(-24 * time.Hour)
-	to := time.Now()
-
-	var eventCount int
-	for timestamp, text := range logger.Query(12345, from, to) {
-		fmt.Printf("%s: %s\n", timestamp.Format("2006-01-02 15:04"), text)
-		eventCount++
-		if eventCount >= 3 { // Limit output for example
-			break
-		}
-	}
-
-	// Output would show historical events like:
-	// 2025-06-11 21:30: Player joined the game
-	// 2025-06-11 21:30: Player moved to position (100, 200)
-	// 2025-06-11 21:30: Player attacked monster
-}
