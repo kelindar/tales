@@ -58,6 +58,17 @@ func (e LogEntry) Time(dayStart time.Time) time.Time {
 }
 
 // ID extracts the sequence ID from a log entry
+// Size returns the total size of the log entry in bytes.
+func (e LogEntry) Size() uint32 {
+	if len(e) < 8 {
+		return 0
+	}
+	textLen := binary.LittleEndian.Uint16(e[4:6])
+	actorCount := binary.LittleEndian.Uint16(e[6:8])
+	return 8 + uint32(textLen) + uint32(actorCount)*4
+}
+
+// ID extracts the sequence ID from a log entry
 func (e LogEntry) ID() uint32 {
 	if len(e) < 4 {
 		return 0

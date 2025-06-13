@@ -116,7 +116,7 @@ func (l *Logger) Query(actor uint32, from, to time.Time) iter.Seq2[time.Time, st
 		l.queryMemoryBuffer(actor, from, to, yield)
 
 		// Query S3 for historical data
-		l.queryS3Historical(context.Background(), actor, from, to, yield)
+		l.queryHistorical(context.Background(), actor, from, to, yield)
 	}
 }
 

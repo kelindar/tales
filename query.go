@@ -9,50 +9,49 @@ import (
 	"github.com/kelindar/threads/internal/codec"
 )
 
-// queryS3Historical implements the S3 historical query logic.
-func (l *Logger) queryS3Historical(ctx context.Context, actor uint32, from, to time.Time, yield func(time.Time, string) bool) {
+// queryHistorical implements the S3 historical query logic.
+func (l *Logger) queryHistorical(ctx context.Context, actor uint32, from, to time.Time, yield func(time.Time, string) bool) {
 	// Query each day in the time range
 	current := dayOf(from)
 	end := dayOf(to).Add(24 * time.Hour)
 
 	for current.Before(end) {
-		if !l.queryS3Day(ctx, actor, current, from, to, yield) {
+		if !l.queryDay(ctx, actor, current, from, to, yield) {
 			return // yield returned false, stop iteration
 		}
 		current = current.Add(24 * time.Hour)
 	}
 }
 
-// queryS3Day queries S3 data for a specific day.
-func (l *Logger) queryS3Day(ctx context.Context, actor uint32, dayStart time.Time, from, to time.Time, yield func(time.Time, string) bool) bool {
-	dateString := formatDate(dayStart)
+// queryDay queries S3 data for a specific day.
+func (l *Logger) queryDay(ctx context.Context, actor uint32, day time.Time, from, to time.Time, yield func(time.Time, string) bool) bool {
+	date := formatDate(day)
 
 	// Build S3 keys
-	tlog := fmt.Sprintf("%s/threads.log", dateString)
-	tidx := fmt.Sprintf("%s/threads.idx", dateString)
-	alog := fmt.Sprintf("%s/actors.log", dateString)
-	aidx := fmt.Sprintf("%s/actors.idx", dateString)
+	tlog := fmt.Sprintf("%s/threads.log", date)
+	tidx := fmt.Sprintf("%s/threads.idx", date)
+	alog := fmt.Sprintf("%s/actors.log", date)
+	aidx := fmt.Sprintf("%s/actors.idx", date)
 
 	// 1. Download and parse index file
-	indexEntries, err := l.downloadIndexEntries(ctx, aidx)
+	entries, err := l.loadIndexFile(ctx, aidx)
 	if err != nil {
-		// If index file doesn't exist, skip this day
-		return true
+		return true // If index file doesn't exist, skip this day
 	}
 
 	// 2. Filter index entries by actor and time range
-	relevantEntries := l.filterIndexEntries(indexEntries, actor, dayStart, from, to)
-	if len(relevantEntries) == 0 {
+	entries = l.filterEntries(entries, actor, day, from, to)
+	if len(entries) == 0 {
 		return true
 	}
 
 	// 3. Download and merge bitmap chunks
-	mergedBitmap, err := l.downloadAndMergeBitmaps(ctx, alog, relevantEntries)
+	bm, err := l.mergeBitmaps(ctx, alog, entries)
 	if err != nil {
 		return true // Skip on error
 	}
 
-	if mergedBitmap.IsEmpty() {
+	if bm.IsEmpty() {
 		return true
 	}
 
@@ -62,17 +61,17 @@ func (l *Logger) queryS3Day(ctx context.Context, actor uint32, dayStart time.Tim
 		return true // If meta file doesn't exist, there's no data for this day.
 	}
 
-	tailMetadata, err := codec.DecodeMetadata(metaBytes)
+	meta, err := codec.DecodeMetadata(metaBytes)
 	if err != nil {
 		return true // Corrupted metadata.
 	}
 
 	// 5. Group sequence IDs by log chunks and query
-	return l.queryLogChunks(ctx, tlog, tailMetadata, mergedBitmap, dayStart, from, to, yield)
+	return l.queryChunks(ctx, tlog, meta, bm, day, from, to, yield)
 }
 
-// downloadIndexEntries downloads and parses the index file.
-func (l *Logger) downloadIndexEntries(ctx context.Context, key string) ([]codec.IndexEntry, error) {
+// loadIndexFile downloads and parses the index file.
+func (l *Logger) loadIndexFile(ctx context.Context, key string) ([]codec.IndexEntry, error) {
 	data, err := l.s3Client.DownloadData(ctx, key)
 	if err != nil {
 		return nil, err
@@ -82,71 +81,72 @@ func (l *Logger) downloadIndexEntries(ctx context.Context, key string) ([]codec.
 		return nil, fmt.Errorf("invalid index file size")
 	}
 
-	entryCount := len(data) / codec.IndexEntrySize
-	entries := make([]codec.IndexEntry, entryCount)
-
-	for i := 0; i < entryCount; i++ {
+	count := len(data) / codec.IndexEntrySize
+	entries := make([]codec.IndexEntry, count)
+	for i := 0; i < count; i++ {
 		start := i * codec.IndexEntrySize
-		end := start + codec.IndexEntrySize
-		entries[i] = codec.IndexEntry(data[start:end])
+		entries[i] = codec.IndexEntry(data[start : start+codec.IndexEntrySize])
 	}
 
 	return entries, nil
 }
 
-// filterIndexEntries filters index entries by actor and time range.
-func (l *Logger) filterIndexEntries(entries []codec.IndexEntry, actor uint32, dayStart, from, to time.Time) []codec.IndexEntry {
-	var filtered []codec.IndexEntry
+// filterEntries filters index entries by actor and time range.
+func (l *Logger) filterEntries(entries []codec.IndexEntry, actor uint32, day, from, to time.Time) []codec.IndexEntry {
+	out := make([]codec.IndexEntry, 0, len(entries))
+	fromMin := uint32(from.Sub(day).Minutes())
+	toMin := uint32(to.Sub(day).Minutes())
 
-	fromMinutes := uint32(from.Sub(dayStart).Minutes())
-	toMinutes := uint32(to.Sub(dayStart).Minutes())
-
-	for _, entry := range entries {
-		if entry.Actor() == actor && entry.Time() >= fromMinutes && entry.Time() <= toMinutes {
-			filtered = append(filtered, entry)
+	for _, e := range entries {
+		if e.Actor() == actor && e.Time() >= fromMin && e.Time() <= toMin {
+			out = append(out, e)
 		}
 	}
 
-	return filtered
+	return out
 }
 
-// downloadAndMergeBitmaps downloads bitmap chunks and merges them.
-func (l *Logger) downloadAndMergeBitmaps(ctx context.Context, key string, entries []codec.IndexEntry) (*roaring.Bitmap, error) {
-	mergedBitmap := roaring.New()
-
-	for _, entry := range entries {
-		// Download bitmap chunk using byte range
-		compressedData, err := l.s3Client.DownloadRange(ctx, key, int64(entry.Offset()), int64(entry.Offset()+uint64(entry.CompressedSize())-1))
-		if err != nil {
-			continue // Skip failed downloads
-		}
-
-		// Decompress bitmap
-		bitmapData, err := l.codec.Decompress(compressedData)
-		if err != nil {
-			continue // Skip decompression errors
-		}
-
-		// Deserialize bitmap
-		bitmap := roaring.New()
-		if _, err := bitmap.FromBuffer(bitmapData); err != nil {
-			continue // Skip deserialization errors
-		}
-
-		// Merge with result
-		mergedBitmap.Or(bitmap)
+// loadBitmap downloads and decodes a single bitmap for a given index entry.
+func (l *Logger) loadBitmap(ctx context.Context, key string, entry codec.IndexEntry) (*roaring.Bitmap, error) {
+	// Download bitmap chunk using byte range
+	end := int64(entry.Offset() + uint64(entry.CompressedSize()) - 1)
+	compressed, err := l.s3Client.DownloadRange(ctx, key, int64(entry.Offset()), end)
+	if err != nil {
+		return nil, fmt.Errorf("failed to download bitmap chunk: %w", err)
 	}
 
-	return mergedBitmap, nil
+	// Decompress and deserialize bitmap
+	decompressed, err := l.codec.Decompress(compressed)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decompress bitmap: %w", err)
+	}
+
+	bm := roaring.New()
+	if _, err := bm.FromBuffer(decompressed); err != nil {
+		return nil, fmt.Errorf("failed to deserialize bitmap: %w", err)
+	}
+
+	return bm, nil
 }
 
-// queryLogChunks queries log chunks for specific sequence IDs.
-func (l *Logger) queryLogChunks(ctx context.Context, logKey string, tailMetadata *codec.Metadata, bitmap *roaring.Bitmap, dayStart, from, to time.Time, yield func(time.Time, string) bool) bool {
-	// Iterate over all chunks and query each one.
-	// This is inefficient as we might download chunks that don't contain our sequence IDs,
-	// but the current file format doesn't allow us to map sequence IDs to chunks beforehand.
-	for _, chunk := range tailMetadata.Chunks {
-		if !l.queryLogChunk(ctx, logKey, chunk, bitmap, dayStart, from, to, yield) {
+// mergeBitmaps downloads bitmap chunks and merges them.
+func (l *Logger) mergeBitmaps(ctx context.Context, key string, entries []codec.IndexEntry) (*roaring.Bitmap, error) {
+	bm := roaring.New()
+	for _, e := range entries {
+		bitmap, err := l.loadBitmap(ctx, key, e)
+		if err != nil {
+			continue // Skip entries that fail to process
+		}
+		bm.Or(bitmap)
+	}
+
+	return bm, nil
+}
+
+// queryChunks queries log chunks for specific sequence IDs.
+func (l *Logger) queryChunks(ctx context.Context, logKey string, meta *codec.Metadata, bm *roaring.Bitmap, day, from, to time.Time, yield func(time.Time, string) bool) bool {
+	for _, chunk := range meta.Chunks {
+		if !l.queryChunk(ctx, logKey, chunk, bm, day, from, to, yield) {
 			return false // Yield returned false, stop.
 		}
 	}
@@ -154,35 +154,42 @@ func (l *Logger) queryLogChunks(ctx context.Context, logKey string, tailMetadata
 	return true
 }
 
-// queryLogChunk queries a specific log chunk for sequence IDs.
-func (l *Logger) queryLogChunk(ctx context.Context, logKey string, chunk codec.ChunkEntry, sequenceIDs *roaring.Bitmap, dayStart, from, to time.Time, yield func(time.Time, string) bool) bool {
+// loadLogChunk downloads, decompresses, and parses a log chunk.
+func (l *Logger) loadLogChunk(ctx context.Context, logKey string, chunk codec.ChunkEntry) ([]codec.LogEntry, error) {
 	// Download chunk using byte range
-	compressedData, err := l.s3Client.DownloadRange(ctx, logKey, int64(chunk.Offset()), int64(chunk.Offset()+uint64(chunk.CompressedSize())-1))
+	end := int64(chunk.Offset() + uint64(chunk.CompressedSize()) - 1)
+	compressed, err := l.s3Client.DownloadRange(ctx, logKey, int64(chunk.Offset()), end)
 	if err != nil {
-		return true // Skip failed downloads
+		return nil, fmt.Errorf("failed to download log chunk: %w", err)
 	}
 
-	// Decompress chunk
-	decompressedData, err := l.codec.Decompress(compressedData)
+	// Decompress chunk and parse log entries
+	decompressed, err := l.codec.Decompress(compressed)
 	if err != nil {
-		return true // Skip decompression errors
+		return nil, fmt.Errorf("failed to decompress log chunk: %w", err)
 	}
 
-	// Parse log entries from decompressed data
-	entries, err := l.parseLogEntriesFromData(decompressedData)
+	return l.decodeLogEntries(decompressed)
+}
+
+// queryChunk queries a specific log chunk for sequence IDs.
+func (l *Logger) queryChunk(ctx context.Context, logKey string, chunk codec.ChunkEntry, sids *roaring.Bitmap, day, from, to time.Time, yield func(time.Time, string) bool) bool {
+	entries, err := l.loadLogChunk(ctx, logKey, chunk)
 	if err != nil {
-		return true // Skip parsing errors
+		return true // Skip chunks that fail to process
 	}
 
 	// Filter and yield matching entries
 	for _, entry := range entries {
-		sequenceID := entry.ID()
-		if sequenceIDs.Contains(sequenceID) {
-			timestamp := timeOf(sequenceID, dayStart)
-			if timestamp.After(from) && timestamp.Before(to) {
-				if !yield(timestamp, entry.Text()) {
-					return false
-				}
+		id := entry.ID()
+		if !sids.Contains(id) {
+			continue
+		}
+
+		ts := timeOf(id, day)
+		if ts.After(from) && ts.Before(to) {
+			if !yield(ts, entry.Text()) {
+				return false // Stop iteration
 			}
 		}
 	}
@@ -190,37 +197,20 @@ func (l *Logger) queryLogChunk(ctx context.Context, logKey string, chunk codec.C
 	return true
 }
 
-// parseLogEntriesFromData parses log entries from raw decompressed data.
-func (l *Logger) parseLogEntriesFromData(data []byte) ([]codec.LogEntry, error) {
+// decodeLogEntries parses log entries from raw decompressed data.
+func (l *Logger) decodeLogEntries(data []byte) ([]codec.LogEntry, error) {
 	var entries []codec.LogEntry
 	buf := data
 
-	for len(buf) > 0 {
-		// Try to parse the current entry
+	for len(buf) > 4 {
 		entry := codec.LogEntry(buf)
-		sequenceID := entry.ID()
-		text := entry.Text()
-		actors := entry.Actors()
-
-		// Check if parsing was successful
-		if sequenceID == 0 && len(text) == 0 && len(actors) == 0 {
-			break // End of valid data
+		size := entry.Size()
+		if size == 0 || uint32(len(buf)) < size {
+			break // Invalid size or not enough data
 		}
 
-		// Re-encode to get the exact size
-		reconstructed, err := codec.NewLogEntry(sequenceID, text, actors)
-		if err != nil {
-			break
-		}
-
-		entrySize := len(reconstructed)
-		if len(buf) < entrySize {
-			break
-		}
-
-		// Extract the entry
-		entries = append(entries, codec.LogEntry(buf[:entrySize]))
-		buf = buf[entrySize:]
+		entries = append(entries, entry[:size])
+		buf = buf[size:]
 	}
 
 	return entries, nil
