@@ -11,6 +11,7 @@ import (
 	"github.com/kelindar/threads/internal/buffer"
 	"github.com/kelindar/threads/internal/codec"
 	"github.com/kelindar/threads/internal/s3"
+	"github.com/kelindar/threads/internal/seq"
 )
 
 // logCmd represents a command to log an entry.
@@ -145,7 +146,7 @@ func (l *Logger) run(ctx context.Context) {
 	defer ticker.Stop()
 
 	// Initialize sequence generator for the current day
-	seqGen := newSequence(time.Now().UTC())
+	seqGen := seq.NewSequence(time.Now().UTC())
 
 	for {
 		select {
@@ -160,7 +161,7 @@ func (l *Logger) run(ctx context.Context) {
 				now := time.Now().UTC()
 
 				// Check if we need to flush for a new day
-				if dayOf(now) != seqGen.Day() {
+				if seq.DayOf(now) != seqGen.Day() {
 					l.flushBuffer(buf)
 				}
 
@@ -191,7 +192,7 @@ func (l *Logger) run(ctx context.Context) {
 // queryMemoryBuffer queries the in-memory buffer for entries.
 func (l *Logger) queryMemoryBuffer(actor uint32, from, to time.Time, yield func(time.Time, string) bool) {
 	ret := make(chan []codec.LogEntry, 1)
-	dayStart := dayOf(from)
+	dayStart := seq.DayOf(from)
 	l.commands <- queryCmd{actor: actor, from: from, to: to, ret: ret}
 
 	for _, entry := range <-ret {

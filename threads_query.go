@@ -7,13 +7,14 @@ import (
 
 	"github.com/RoaringBitmap/roaring/v2"
 	"github.com/kelindar/threads/internal/codec"
+	"github.com/kelindar/threads/internal/seq"
 )
 
 // queryHistorical implements the S3 historical query logic.
 func (l *Logger) queryHistorical(ctx context.Context, actor uint32, from, to time.Time, yield func(time.Time, string) bool) {
 	// Query each day in the time range
-	current := dayOf(from)
-	end := dayOf(to).Add(24 * time.Hour)
+	current := seq.DayOf(from)
+	end := seq.DayOf(to).Add(24 * time.Hour)
 
 	for current.Before(end) {
 		if !l.queryDay(ctx, actor, current, from, to, yield) {
@@ -25,7 +26,7 @@ func (l *Logger) queryHistorical(ctx context.Context, actor uint32, from, to tim
 
 // queryDay queries S3 data for a specific day.
 func (l *Logger) queryDay(ctx context.Context, actor uint32, day time.Time, from, to time.Time, yield func(time.Time, string) bool) bool {
-	date := formatDate(day)
+	date := seq.FormatDate(day)
 
 	// Build S3 keys
 	tlog := fmt.Sprintf("%s/threads.log", date)
@@ -186,7 +187,7 @@ func (l *Logger) queryChunk(ctx context.Context, logKey string, chunk codec.Chun
 			continue
 		}
 
-		ts := timeOf(id, day)
+		ts := seq.TimeOf(id, day)
 		if ts.After(from) && ts.Before(to) {
 			if !yield(ts, entry.Text()) {
 				return false // Stop iteration

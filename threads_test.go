@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/kelindar/threads/internal/s3"
+	"github.com/kelindar/threads/internal/seq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -81,7 +82,7 @@ func TestIntegration(t *testing.T) {
 }
 
 func TestSequenceIDGeneration(t *testing.T) {
-	seqGen := newSequence(time.Now())
+	seqGen := seq.NewSequence(time.Now())
 
 	t.Run("SequentialIDs", func(t *testing.T) {
 		now := time.Now()
@@ -95,9 +96,9 @@ func TestSequenceIDGeneration(t *testing.T) {
 		assert.Greater(t, id3, id2)
 
 		// Should be able to reconstruct timestamps
-		ts1 := timeOf(id1, seqGen.Day())
-		ts2 := timeOf(id2, seqGen.Day())
-		ts3 := timeOf(id3, seqGen.Day())
+		ts1 := seq.TimeOf(id1, seqGen.Day())
+		ts2 := seq.TimeOf(id2, seqGen.Day())
+		ts3 := seq.TimeOf(id3, seqGen.Day())
 
 		// Timestamps should be close to the original time (within same minute)
 		assert.WithinDuration(t, now, ts1, time.Minute)
@@ -126,6 +127,6 @@ func TestSequenceIDGeneration(t *testing.T) {
 
 		// IDs should be different and day start should be updated
 		assert.NotEqual(t, id1, id2)
-		assert.Equal(t, seqGen.Day(), dayOf(tomorrow))
+		assert.Equal(t, seqGen.Day(), seq.DayOf(tomorrow))
 	})
 }

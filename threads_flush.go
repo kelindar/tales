@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/kelindar/threads/internal/buffer"
 	"github.com/kelindar/threads/internal/codec"
+	"github.com/kelindar/threads/internal/seq"
 )
 
 // flushBuffer flushes the current buffer to S3 using a separate metadata file.
@@ -29,8 +30,8 @@ func (l *Logger) flushBuffer(buf *buffer.Buffer) error {
 	}
 
 	now := time.Now()
-	day := dayOf(now)
-	date := formatDate(now)
+	day := seq.DayOf(now)
+	date := seq.FormatDate(now)
 	flushTimeMinutes := uint32(now.Sub(day).Minutes())
 
 	tlog := fmt.Sprintf("%s/threads.log", date)
