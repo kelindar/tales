@@ -4,6 +4,10 @@ import (
 	"context"
 	"testing"
 
+	"errors"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -277,5 +281,32 @@ func TestMockServerDirectly(t *testing.T) {
 		// Try non-existent key
 		_, exists = mockServer.GetObject("non-existent-key")
 		assert.False(t, exists)
+	})
+}
+
+func TestIsNoSuchKey(t *testing.T) {
+	t.Run("with *types.NoSuchKey", func(t *testing.T) {
+		assert.True(t, IsNoSuchKey(&types.NoSuchKey{}))
+	})
+
+	t.Run("with wrapped *types.NoSuchKey", func(t *testing.T) {
+		err := fmt.Errorf("wrapped: %w", &types.NoSuchKey{})
+		assert.True(t, IsNoSuchKey(err))
+	})
+
+	t.Run("with 'NoSuchKey' substring", func(t *testing.T) {
+		assert.True(t, IsNoSuchKey(errors.New("some error with NoSuchKey in it")))
+	})
+
+	t.Run("with '404' substring", func(t *testing.T) {
+		assert.True(t, IsNoSuchKey(errors.New("http status 404")))
+	})
+
+	t.Run("with unrelated error", func(t *testing.T) {
+		assert.False(t, IsNoSuchKey(errors.New("some other error")))
+	})
+
+	t.Run("with nil error", func(t *testing.T) {
+		assert.False(t, IsNoSuchKey(nil))
 	})
 }

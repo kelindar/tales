@@ -2,13 +2,12 @@ package threads
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/kelindar/threads/internal/buffer"
 	"github.com/kelindar/threads/internal/codec"
+	"github.com/kelindar/threads/internal/s3"
 	"github.com/kelindar/threads/internal/seq"
 )
 
@@ -40,18 +39,14 @@ func (l *Service) flushBuffer(buf *buffer.Buffer) error {
 	aidx := fmt.Sprintf("%s/actors.idx", date)
 
 	// 1. Read existing metadata file.
-	metaBytes, err := l.s3Client.Download(ctx, tidx)
 	var meta *codec.Metadata
-	if err != nil {
-		var nsk *types.NoSuchKey
-		if errors.As(err, &nsk) {
-			// Metadata file doesn't exist, create a new one.
-			meta = codec.NewMetadata(day)
-		} else {
-			return fmt.Errorf("failed to download metadata: %w", err)
-		}
-	} else {
-		// Metadata file exists, decode it.
+	metaBytes, err := l.s3Client.Download(ctx, tidx)
+	switch {
+	case err != nil && s3.IsNoSuchKey(err):
+		meta = codec.NewMetadata(day)
+	case err != nil:
+		return fmt.Errorf("failed to download metadata: %w", err)
+	default:
 		meta, err = codec.DecodeMetadata(metaBytes)
 		if err != nil {
 			return fmt.Errorf("failed to decode metadata: %w", err)

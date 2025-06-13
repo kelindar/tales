@@ -306,3 +306,22 @@ func (c *S3Client) Upload(ctx context.Context, key string, data []byte) error {
 	}
 	return nil // Should be unreachable if retryAttempts >= 0
 }
+
+// IsNoSuchKey checks if the error is a NoSuchKey error.
+func IsNoSuchKey(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var nsk *types.NoSuchKey
+	switch {
+	case errors.As(err, &nsk):
+		return true
+	case strings.Contains(err.Error(), "NoSuchKey"):
+		return true
+	case strings.Contains(err.Error(), "404"):
+		return true
+	default:
+		return false
+	}
+}
