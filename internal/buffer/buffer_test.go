@@ -77,21 +77,35 @@ func TestBuffer_Query(t *testing.T) {
 
 	// Query for actor 10
 	results := buf.Query(10, dayStart, dayStart, dayStart.Add(time.Hour))
-	assert.Len(t, results, 2)
+	count := 0
+	for range results {
+		count++
+	}
+	assert.Equal(t, 2, count)
 
 	// Query for actor 20
 	results = buf.Query(20, dayStart, dayStart, dayStart.Add(time.Hour))
-	assert.Len(t, results, 1)
-	assert.Equal(t, entry1.ID(), results[0].ID())
+	entries := []codec.LogEntry{}
+	for entry := range results {
+		entries = append(entries, entry)
+	}
+	assert.Len(t, entries, 1)
+	assert.Equal(t, entry1.ID(), entries[0].ID())
 
 	// Query for actor 30
 	results = buf.Query(30, dayStart, dayStart, dayStart.Add(time.Hour))
-	assert.Len(t, results, 1)
-	assert.Equal(t, entry2.ID(), results[0].ID())
+	entries = entries[:0]
+	for entry := range results {
+		entries = append(entries, entry)
+	}
+	assert.Len(t, entries, 1)
+	assert.Equal(t, entry2.ID(), entries[0].ID())
 
 	// Query for non-existent actor
 	results = buf.Query(99, dayStart, dayStart, dayStart.Add(time.Hour))
-	assert.Empty(t, results)
+	count = 0
+	for range results {
+		count++
+	}
+	assert.Equal(t, 0, count)
 }
-
-

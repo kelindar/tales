@@ -26,7 +26,7 @@ type queryCmd struct {
 	from  time.Time
 	to    time.Time
 	yield func(time.Time, string) bool
-	ret   chan<- []codec.LogEntry
+	ret   chan<- iter.Seq[codec.LogEntry]
 }
 
 // flushCmd represents a command to flush the buffer.
