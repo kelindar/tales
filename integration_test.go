@@ -78,23 +78,23 @@ func TestIntegration(t *testing.T) {
 }
 
 func TestSequenceIDGeneration(t *testing.T) {
-	seqGen := NewSequenceGenerator(time.Now())
+	seqGen := newSequence(time.Now())
 
 	t.Run("SequentialIDs", func(t *testing.T) {
 		now := time.Now()
 
-		id1 := seqGen.Generate(now)
-		id2 := seqGen.Generate(now)
-		id3 := seqGen.Generate(now)
+		id1 := seqGen.Next(now)
+		id2 := seqGen.Next(now)
+		id3 := seqGen.Next(now)
 
 		// IDs should be sequential
 		assert.Greater(t, id2, id1)
 		assert.Greater(t, id3, id2)
 
 		// Should be able to reconstruct timestamps
-		ts1 := ReconstructTimestamp(id1, seqGen.DayStart())
-		ts2 := ReconstructTimestamp(id2, seqGen.DayStart())
-		ts3 := ReconstructTimestamp(id3, seqGen.DayStart())
+		ts1 := timeOf(id1, seqGen.Day())
+		ts2 := timeOf(id2, seqGen.Day())
+		ts3 := timeOf(id3, seqGen.Day())
 
 		// Timestamps should be close to the original time (within same minute)
 		assert.WithinDuration(t, now, ts1, time.Minute)
@@ -106,8 +106,8 @@ func TestSequenceIDGeneration(t *testing.T) {
 		now1 := time.Now()
 		now2 := now1.Add(2 * time.Minute)
 
-		id1 := seqGen.Generate(now1)
-		id2 := seqGen.Generate(now2)
+		id1 := seqGen.Next(now1)
+		id2 := seqGen.Next(now2)
 
 		// IDs from different minutes should be different
 		assert.NotEqual(t, id1, id2)
@@ -115,15 +115,15 @@ func TestSequenceIDGeneration(t *testing.T) {
 
 	t.Run("NewDayReset", func(t *testing.T) {
 		// Generate some IDs
-		id1 := seqGen.Generate(time.Now())
+		id1 := seqGen.Next(time.Now())
 
 		// Generate ID for next day (should auto-reset)
 		tomorrow := time.Now().Add(24 * time.Hour)
-		id2 := seqGen.Generate(tomorrow)
+		id2 := seqGen.Next(tomorrow)
 
 		// IDs should be different and day start should be updated
 		assert.NotEqual(t, id1, id2)
-		assert.Equal(t, seqGen.DayStart(), getDayStart(tomorrow))
+		assert.Equal(t, seqGen.Day(), dayOf(tomorrow))
 	})
 }
 

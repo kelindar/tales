@@ -12,8 +12,8 @@ import (
 // queryS3Historical implements the S3 historical query logic.
 func (l *Logger) queryS3Historical(ctx context.Context, actor uint32, from, to time.Time, yield func(time.Time, string) bool) {
 	// Query each day in the time range
-	current := getDayStart(from)
-	end := getDayStart(to).Add(24 * time.Hour)
+	current := dayOf(from)
+	end := dayOf(to).Add(24 * time.Hour)
 
 	for current.Before(end) {
 		if !l.queryS3Day(ctx, actor, current, from, to, yield) {
@@ -25,7 +25,7 @@ func (l *Logger) queryS3Historical(ctx context.Context, actor uint32, from, to t
 
 // queryS3Day queries S3 data for a specific day.
 func (l *Logger) queryS3Day(ctx context.Context, actor uint32, dayStart time.Time, from, to time.Time, yield func(time.Time, string) bool) bool {
-	dateString := getDateString(dayStart)
+	dateString := formatDate(dayStart)
 
 	// Build S3 keys
 	logKey := fmt.Sprintf("%s/threads.log", dateString)
@@ -178,7 +178,7 @@ func (l *Logger) queryLogChunk(ctx context.Context, logKey string, chunk codec.C
 	for _, entry := range entries {
 		sequenceID := entry.ID()
 		if sequenceIDs.Contains(sequenceID) {
-			timestamp := ReconstructTimestamp(sequenceID, dayStart)
+			timestamp := timeOf(sequenceID, dayStart)
 			if timestamp.After(from) && timestamp.Before(to) {
 				if !yield(timestamp, entry.Text()) {
 					return false

@@ -145,7 +145,7 @@ func (l *Logger) run(ctx context.Context) {
 	defer ticker.Stop()
 
 	// Initialize sequence generator for the current day
-	seqGen := NewSequenceGenerator(time.Now().UTC())
+	seqGen := newSequence(time.Now().UTC())
 
 	for {
 		select {
@@ -160,11 +160,11 @@ func (l *Logger) run(ctx context.Context) {
 				now := time.Now().UTC()
 
 				// Check if we need to flush for a new day
-				if getDayStart(now) != seqGen.DayStart() {
+				if dayOf(now) != seqGen.Day() {
 					l.flushBuffer(buf)
 				}
 
-				sequenceID := seqGen.Generate(now)
+				sequenceID := seqGen.Next(now)
 				entry, _ := codec.NewLogEntry(sequenceID, c.text, c.actors)
 				if !buf.Add(entry) {
 					l.flushBuffer(buf)
@@ -172,7 +172,7 @@ func (l *Logger) run(ctx context.Context) {
 				}
 
 			case queryCmd:
-				results := buf.Query(c.actor, seqGen.DayStart(), c.from, c.to)
+				results := buf.Query(c.actor, seqGen.Day(), c.from, c.to)
 				c.ret <- results
 
 			case flushCmd:
@@ -191,7 +191,7 @@ func (l *Logger) run(ctx context.Context) {
 // queryMemoryBuffer queries the in-memory buffer for entries.
 func (l *Logger) queryMemoryBuffer(actor uint32, from, to time.Time, yield func(time.Time, string) bool) {
 	ret := make(chan []codec.LogEntry, 1)
-	dayStart := getDayStart(from)
+	dayStart := dayOf(from)
 	l.commands <- queryCmd{actor: actor, from: from, to: to, ret: ret}
 
 	for _, entry := range <-ret {

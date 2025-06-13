@@ -14,55 +14,54 @@ const (
 	maxCounter  = (1 << counterBits) - 1 // Maximum counter value
 )
 
-// SequenceGenerator generates unique sequence IDs for a specific day.
+// sequence generates unique sequence IDs for a specific day.
 // Sequence ID Format: (minutes_from_day_start << 20) | atomic_counter
-type SequenceGenerator struct {
-	dayStart time.Time     // Start of the current day (UTC)
-	counter  atomic.Uint32 // Atomic counter for uniqueness
+type sequence struct {
+	day time.Time     // Start of the current day (UTC)
+	cnt atomic.Uint32 // Atomic counter for uniqueness
 }
 
-// NewSequenceGenerator creates a new sequence generator for the given day.
-func NewSequenceGenerator(dayStart time.Time) *SequenceGenerator {
-	return &SequenceGenerator{
-		dayStart: getDayStart(dayStart),
+// newSequence creates a new sequence generator for the given day.
+func newSequence(dayStart time.Time) *sequence {
+	return &sequence{
+		day: dayOf(dayStart),
 	}
 }
 
-// Generate creates a unique sequence ID for the given timestamp.
-func (sg *SequenceGenerator) Generate(now time.Time) uint32 {
+// Next creates a unique sequence ID for the given timestamp.
+func (sg *sequence) Next(now time.Time) uint32 {
 	// Check if we need to reset for a new day
-	if getDayStart(now) != sg.dayStart {
-		sg.dayStart = getDayStart(now)
-		sg.counter.Store(0)
+	if dayOf(now) != sg.day {
+		sg.day = dayOf(now)
+		sg.cnt.Store(0)
 	}
 
-	minutesFromDayStart := uint32(now.Sub(sg.dayStart).Minutes())
+	minutesFromDayStart := uint32(now.Sub(sg.day).Minutes())
 	if minutesFromDayStart > maxMinutes {
 		minutesFromDayStart = maxMinutes
 	}
 
-	counter := sg.counter.Add(1) & counterMask
+	counter := sg.cnt.Add(1) & counterMask
 	return (minutesFromDayStart << counterBits) | counter
 }
 
-// DayStart returns the current day start time.
-func (sg *SequenceGenerator) DayStart() time.Time {
-	return sg.dayStart
+// Day returns the current day start time.
+func (sg *sequence) Day() time.Time {
+	return sg.day
 }
 
-// ReconstructTimestamp reconstructs a timestamp from a sequence ID and day start.
-func ReconstructTimestamp(sequenceID uint32, dayStart time.Time) time.Time {
-	minutes := sequenceID >> counterBits
-	return dayStart.Add(time.Duration(minutes) * time.Minute)
+// timeOf reconstructs a timestamp from a sequence ID and day start.
+func timeOf(sequenceID uint32, dayStart time.Time) time.Time {
+	return dayStart.Add(time.Duration(sequenceID>>counterBits) * time.Minute)
 }
 
-// getDayStart returns the start of the day (00:00:00) for the given time in UTC.
-func getDayStart(t time.Time) time.Time {
+// dayOf returns the start of the day (00:00:00) for the given time in UTC.
+func dayOf(t time.Time) time.Time {
 	year, month, day := t.UTC().Date()
 	return time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
 }
 
-// getDateString returns the date string in YYYY-MM-DD format for S3 key prefixes.
-func getDateString(t time.Time) string {
+// formatDate returns the date string in YYYY-MM-DD format for S3 key prefixes.
+func formatDate(t time.Time) string {
 	return t.UTC().Format("2006-01-02")
 }

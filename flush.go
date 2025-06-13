@@ -29,23 +29,23 @@ func (l *Logger) flushBuffer(buf *buffer.Buffer) error {
 	}
 
 	now := time.Now()
-	dayStart := getDayStart(now)
-	dateString := getDateString(now)
-	flushTimeMinutes := uint32(now.Sub(dayStart).Minutes())
+	day := dayOf(now)
+	date := formatDate(now)
+	flushTimeMinutes := uint32(now.Sub(day).Minutes())
 
-	logKey := fmt.Sprintf("%s/threads.log", dateString)
-	metaKey := fmt.Sprintf("%s/threads.meta", dateString)
-	bitmapKey := fmt.Sprintf("%s/threads.rbm", dateString)
-	indexKey := fmt.Sprintf("%s/threads.idx", dateString)
+	tlog := fmt.Sprintf("%s/threads.log", date)
+	tidx := fmt.Sprintf("%s/threads.idx", date)
+	alog := fmt.Sprintf("%s/actors.log", date)
+	aidx := fmt.Sprintf("%s/actors.idx", date)
 
 	// 1. Read existing metadata file.
-	metaBytes, err := l.s3Client.DownloadData(ctx, metaKey)
+	metaBytes, err := l.s3Client.DownloadData(ctx, tidx)
 	var meta *codec.Metadata
 	if err != nil {
 		var nsk *types.NoSuchKey
 		if errors.As(err, &nsk) {
 			// Metadata file doesn't exist, create a new one.
-			meta = codec.NewMetadata(dayStart)
+			meta = codec.NewMetadata(day)
 		} else {
 			return fmt.Errorf("failed to download metadata: %w", err)
 		}
@@ -58,7 +58,7 @@ func (l *Logger) flushBuffer(buf *buffer.Buffer) error {
 	}
 
 	// 2. Append new log data to the log file.
-	if err := l.s3Client.AppendData(ctx, logKey, res.Data.CompressedData); err != nil {
+	if err := l.s3Client.AppendData(ctx, tlog, res.Data.CompressedData); err != nil {
 		return fmt.Errorf("failed to append to log file: %w", err)
 	}
 
@@ -68,11 +68,11 @@ func (l *Logger) flushBuffer(buf *buffer.Buffer) error {
 	// 4. Handle bitmaps and index entries.
 	bitmapChunkOffset := meta.TotalBitmapSize
 	for _, rbm := range res.Index {
-		if err := l.s3Client.AppendData(ctx, bitmapKey, rbm.CompressedData); err != nil {
+		if err := l.s3Client.AppendData(ctx, alog, rbm.CompressedData); err != nil {
 			return err
 		}
 		indexEntry := codec.NewIndexEntry(flushTimeMinutes, rbm.ActorID, uint64(bitmapChunkOffset), rbm.CompressedSize, rbm.UncompressedSize)
-		if err := l.s3Client.AppendData(ctx, indexKey, indexEntry); err != nil {
+		if err := l.s3Client.AppendData(ctx, aidx, indexEntry); err != nil {
 			return err
 		}
 		bitmapChunkOffset += rbm.CompressedSize
@@ -93,5 +93,5 @@ func (l *Logger) flushBuffer(buf *buffer.Buffer) error {
 		return fmt.Errorf("failed to re-encode metadata: %w", err)
 	}
 
-	return l.s3Client.AppendData(ctx, metaKey, encodedMeta)
+	return l.s3Client.AppendData(ctx, tidx, encodedMeta)
 }
