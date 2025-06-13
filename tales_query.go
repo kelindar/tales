@@ -13,11 +13,11 @@ import (
 
 // queryMemory queries the in-memory buffer for entries.
 func (l *Service) queryMemory(actor uint32, from, to time.Time, yield func(time.Time, string) bool) {
-	ret := make(chan []codec.LogEntry, 1)
+	ret := make(chan iter.Seq[codec.LogEntry], 1)
 	l.commands <- queryCmd{actor: actor, from: from, to: to, ret: ret}
 
 	day := seq.DayOf(from)
-	for _, entry := range <-ret {
+	for entry := range <-ret {
 		if !yield(entry.Time(day), entry.Text()) {
 			return
 		}

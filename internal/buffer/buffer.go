@@ -5,6 +5,7 @@ import (
 
 	"github.com/RoaringBitmap/roaring/v2"
 	"github.com/kelindar/threads/internal/codec"
+	"iter"
 )
 
 // Buffer represents the in-memory buffer for the current chunk.
@@ -82,38 +83,42 @@ func (b *Buffer) parseEntries(data []byte) []codec.LogEntry {
 }
 
 // Query returns entries for a specific actor within a time range.
-func (b *Buffer) Query(actorID uint32, dayStart time.Time, from, to time.Time) []codec.LogEntry {
-	var result []codec.LogEntry
+func (b *Buffer) Query(actorID uint32, dayStart time.Time, from, to time.Time) iter.Seq[codec.LogEntry] {
+	return func(yield func(codec.LogEntry) bool) {
+		// Get bitmap for this actor
+		bitmap := b.index[actorID]
+		if bitmap == nil {
+			return
+		}
 
-	// Get bitmap for this actor
-	bitmap := b.index[actorID]
-	if bitmap == nil {
-		return result
-	}
+		// Convert time range to sequence ID range (normalize to UTC first)
+		fromSeq := timeToSequenceID(from.UTC(), dayStart)
+		toSeq := timeToSequenceID(to.UTC(), dayStart)
 
-	// Convert time range to sequence ID range (normalize to UTC first)
-	fromSeq := timeToSequenceID(from.UTC(), dayStart)
-	toSeq := timeToSequenceID(to.UTC(), dayStart)
+		buffer := b.data
+		for len(buffer) > 0 {
+			entry := codec.LogEntry(buffer)
+			size := int(entry.Size())
+			if size == 0 || size > len(buffer) {
+				return
+			}
 
-	// Parse all entries and filter by actor and time range
-	entries := b.parseEntries(b.data)
-	for _, entry := range entries {
-		sequenceID := entry.ID()
-		if sequenceID >= fromSeq && sequenceID <= toSeq {
-			// Get actors using accessor
-			actors := entry.Actors()
-
-			// Check if this entry contains the actor
-			for _, actor := range actors {
-				if actor == actorID {
-					result = append(result, entry)
-					break
+			sequenceID := entry.ID()
+			if sequenceID >= fromSeq && sequenceID <= toSeq {
+				// Check if this entry contains the actor
+				for _, actor := range entry.Actors() {
+					if actor == actorID {
+						if !yield(entry[:size]) {
+							return
+						}
+						break
+					}
 				}
 			}
+
+			buffer = buffer[size:]
 		}
 	}
-
-	return result
 }
 
 // Binary represents compressed data.
