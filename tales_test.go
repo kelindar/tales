@@ -93,7 +93,6 @@ func TestIntegration(t *testing.T) {
 func newService() (*Service, error) {
 	// Create a mock S3 server
 	mockS3 := s3.NewMockS3Server()
-	defer mockS3.Close()
 
 	// Create S3 config for mock server
 	s3Config := s3.CreateConfigForMock(mockS3, "test-bucket", "test-prefix")

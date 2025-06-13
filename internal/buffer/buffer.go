@@ -68,31 +68,14 @@ func (b *Buffer) parseEntries(data []byte) []codec.LogEntry {
 	buf := data
 
 	for len(buf) > 0 {
-		// Try to parse the current entry
 		entry := codec.LogEntry(buf)
-		sequenceID := entry.ID()
-		text := entry.Text()
-		actors := entry.Actors()
-
-		// Check if parsing was successful
-		if sequenceID == 0 && len(text) == 0 && len(actors) == 0 {
-			break // End of valid data
-		}
-
-		// Re-encode to get the exact size
-		reconstructed, err := codec.NewLogEntry(sequenceID, text, actors)
-		if err != nil {
+		size := int(entry.Size())
+		if size == 0 || size > len(buf) {
 			break
 		}
 
-		entrySize := len(reconstructed)
-		if len(buf) < entrySize {
-			break
-		}
-
-		// Extract the entry
-		entries = append(entries, codec.LogEntry(buf[:entrySize]))
-		buf = buf[entrySize:]
+		entries = append(entries, entry[:size])
+		buf = buf[size:]
 	}
 
 	return entries
