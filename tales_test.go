@@ -10,25 +10,32 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestIntegration(t *testing.T) {
-	// Create a mock S3 server
-	mockS3 := s3.NewMockS3Server()
-	defer mockS3.Close()
+/*
+BenchmarkTales-12    	       1	9549168167 ns/op	     26822 log/s	182058528 B/op	 1027347 allocs/op
+*/
+func BenchmarkTales(b *testing.B) {
+	logger, err := newService()
+	require.NoError(b, err)
+	defer logger.Close()
 
-	// Create S3 config for mock server
-	s3Config := s3.CreateConfigForMock(mockS3, "test-bucket", "test-prefix")
+	count := 0
+	start := time.Now()
+	for time.Now().Sub(start) < time.Second {
+		const interval = 50 * time.Millisecond
+		for i := time.Now(); time.Now().Sub(i) < interval; {
+			logger.Log("hello world", 1)
+			count++
+		}
 
-	// Create logger config
-	config := Config{
-		ChunkInterval: 1 * time.Minute,
-		BufferSize:    1024 * 1024, // 1MB
-		S3Config:      s3Config,
-		NewS3Client: func(ctx context.Context, config s3.Config) (s3.Client, error) {
-			return s3.NewMockClient(ctx, mockS3, config)
-		},
+		logger.flush()
+		logger.Query(1, time.Now().Add(-1*time.Hour), time.Now().Add(1*time.Hour))
 	}
 
-	logger, err := New(config)
+	b.ReportMetric(float64(count)/time.Now().Sub(start).Seconds(), "log/s")
+}
+
+func TestIntegration(t *testing.T) {
+	logger, err := newService()
 	require.NoError(t, err)
 	defer logger.Close()
 
@@ -81,4 +88,25 @@ func TestIntegration(t *testing.T) {
 		results4 = append(results4, msg)
 	}
 	assert.Empty(t, results4)
+}
+
+func newService() (*Service, error) {
+	// Create a mock S3 server
+	mockS3 := s3.NewMockS3Server()
+	defer mockS3.Close()
+
+	// Create S3 config for mock server
+	s3Config := s3.CreateConfigForMock(mockS3, "test-bucket", "test-prefix")
+
+	// Create logger config
+	config := Config{
+		ChunkInterval: 1 * time.Minute,
+		BufferSize:    1024 * 1024, // 1MB
+		S3Config:      s3Config,
+		NewS3Client: func(ctx context.Context, config s3.Config) (s3.Client, error) {
+			return s3.NewMockClient(ctx, mockS3, config)
+		},
+	}
+
+	return New(config)
 }
