@@ -331,11 +331,11 @@ func (m *MockS3Server) handleAbortMultipartUpload(w http.ResponseWriter, r *http
 // CreateConfigForMock creates a Config that points to the mock server
 func CreateConfigForMock(mockServer *MockS3Server, bucket, prefix string) Config {
 	return Config{
-		Bucket:        bucket,
-		Region:        "us-east-1", // Mock region
-		Prefix:        prefix,
-		MaxConcurrent: 10,
-		RetryAttempts: 3,
+		Bucket:      bucket,
+		Region:      "us-east-1", // Mock region
+		Prefix:      prefix,
+		Concurrency: 10,
+		Retries:     3,
 	}
 }
 
@@ -366,7 +366,7 @@ func NewMockClient(ctx context.Context, mockServer *MockS3Server, s3Config Confi
 		client:        s3Client,
 		bucket:        s3Config.Bucket,
 		prefix:        s3Config.Prefix,
-		maxConcurrent: s3Config.MaxConcurrent,
-		retryAttempts: s3Config.RetryAttempts,
+		maxConcurrent: s3Config.Concurrency,
+		retryAttempts: s3Config.Retries,
 	}, nil
 }

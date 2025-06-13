@@ -16,11 +16,11 @@ import (
 
 // Config represents the S3-specific configuration.
 type Config struct {
-	Bucket        string // S3 bucket name (required)
-	Region        string // AWS region (required)
-	Prefix        string // S3 key prefix (optional)
-	MaxConcurrent int    // Max concurrent S3 requests (default: 10)
-	RetryAttempts int    // Retry attempts for failed requests (default: 3)
+	Bucket      string // S3 bucket name (required)
+	Region      string // AWS region (required)
+	Prefix      string // S3 key prefix (optional)
+	Concurrency int    // Max concurrent S3 requests (default: 10)
+	Retries     int    // Retry attempts for failed requests (default: 3)
 	// AWS credentials are handled via environment variables or IAM roles
 }
 
@@ -59,20 +59,18 @@ type S3Client struct {
 
 // NewClient creates a new S3 client with the given configuration.
 func NewClient(ctx context.Context, s3Config Config) (Client, error) {
-	// Load AWS configuration
 	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(s3Config.Region))
 	if err != nil {
 		return nil, ErrS3Operation{Operation: "load config", Err: err}
 	}
 
 	client := s3.NewFromConfig(cfg)
-
 	return &S3Client{
 		client:        client,
 		bucket:        s3Config.Bucket,
 		prefix:        s3Config.Prefix,
-		maxConcurrent: s3Config.MaxConcurrent,
-		retryAttempts: s3Config.RetryAttempts,
+		maxConcurrent: s3Config.Concurrency,
+		retryAttempts: s3Config.Retries,
 	}, nil
 }
 

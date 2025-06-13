@@ -24,11 +24,11 @@ func (c *Config) setDefaults() {
 	if c.BufferSize == 0 {
 		c.BufferSize = 1000
 	}
-	if c.S3Config.MaxConcurrent == 0 {
-		c.S3Config.MaxConcurrent = 10
+	if c.S3Config.Concurrency == 0 {
+		c.S3Config.Concurrency = 10
 	}
-	if c.S3Config.RetryAttempts == 0 {
-		c.S3Config.RetryAttempts = 3
+	if c.S3Config.Retries == 0 {
+		c.S3Config.Retries = 3
 	}
 }
 
