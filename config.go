@@ -2,6 +2,7 @@ package threads
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/kelindar/threads/internal/s3"
@@ -33,17 +34,15 @@ func (c *Config) setDefaults() {
 
 // validate checks if the configuration is valid.
 func (c *Config) validate() error {
-	if c.S3Config.Bucket == "" {
-		return ErrInvalidConfig("S3 bucket is required")
-	}
-	if c.S3Config.Region == "" {
-		return ErrInvalidConfig("S3 region is required")
-	}
-	if c.ChunkInterval < time.Minute {
-		return ErrInvalidConfig("chunk interval must be at least 1 minute")
-	}
-	if c.BufferSize < 1 {
-		return ErrInvalidConfig("buffer size must be at least 1")
+	switch {
+	case c.S3Config.Bucket == "":
+		return fmt.Errorf("S3 bucket is required")
+	case c.S3Config.Region == "":
+		return fmt.Errorf("S3 region is required")
+	case c.ChunkInterval < time.Minute:
+		return fmt.Errorf("chunk interval must be at least 1 minute")
+	case c.BufferSize < 1:
+		return fmt.Errorf("buffer size must be at least 1")
 	}
 	return nil
 }

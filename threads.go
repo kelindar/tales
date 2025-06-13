@@ -87,17 +87,22 @@ func New(config Config) (*Logger, error) {
 }
 
 // Log adds a log entry with the given text and actors.
-func (l *Logger) Log(text string, actors []uint32) error {
-	if atomic.LoadInt32(&l.closed) != 0 {
-		return ErrClosed("cannot log to closed logger")
+func (l *Logger) Log(text string, actors ...uint32) error {
+	switch {
+	case len(text) == 0:
+		return fmt.Errorf("empty log entry")
+	case len(actors) == 0:
+		return fmt.Errorf("no actors specified")
+	case len(actors) > 65535:
+		return fmt.Errorf("too many actors (max 65535)")
+	case len(text) > 65535:
+		return fmt.Errorf("text too long (max 65535 bytes)")
+	case atomic.LoadInt32(&l.closed) != 0:
+		return fmt.Errorf("cannot log to closed logger")
+	default:
+		l.commands <- logCmd{text: text, actors: actors}
+		return nil
 	}
-
-	if len(actors) == 0 {
-		return ErrInvalidConfig("at least one actor is required")
-	}
-
-	l.commands <- logCmd{text: text, actors: actors}
-	return nil
 }
 
 // Query returns an iterator over log entries for the specified actor and time range.
@@ -118,7 +123,7 @@ func (l *Logger) Query(actor uint32, from, to time.Time) iter.Seq2[time.Time, st
 // Close gracefully shuts down the logger, flushing any remaining data.
 func (l *Logger) Close() error {
 	if !atomic.CompareAndSwapInt32(&l.closed, 0, 1) {
-		return ErrClosed("logger already closed")
+		return fmt.Errorf("logger already closed")
 	}
 
 	// Signal the run loop to exit and wait for it to finish

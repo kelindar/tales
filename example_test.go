@@ -29,11 +29,11 @@ func Example() {
 	defer logger.Close()
 
 	// Log some game events
-	logger.Log("Player joined the game", []uint32{12345})
-	logger.Log("Player moved to position (100, 200)", []uint32{12345})
-	logger.Log("Player attacked monster", []uint32{12345, 67890}) // Player and monster
-	logger.Log("Monster died", []uint32{67890})
-	logger.Log("Player gained 100 XP", []uint32{12345})
+	logger.Log("Player joined the game", 12345)
+	logger.Log("Player moved to position (100, 200)", 12345)
+	logger.Log("Player attacked monster", 12345, 67890) // Player and monster
+	logger.Log("Monster died", 67890)
+	logger.Log("Player gained 100 XP", 12345)
 
 	// Query events for a specific player
 	from := time.Now().Add(-1 * time.Hour)

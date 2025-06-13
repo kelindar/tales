@@ -34,9 +34,9 @@ func TestIntegration(t *testing.T) {
 	defer logger.Close()
 
 	// Log some messages
-	logger.Log("hello world 1", []uint32{1})
-	logger.Log("hello world 2", []uint32{2})
-	logger.Log("hello world 3", []uint32{1, 3})
+	logger.Log("hello world 1", 1)
+	logger.Log("hello world 2", 2)
+	logger.Log("hello world 3", 1, 3)
 
 	// Wait for flush to happen
 	done := make(chan struct{})

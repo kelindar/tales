@@ -79,7 +79,7 @@ func (l *Logger) downloadIndexEntries(ctx context.Context, key string) ([]codec.
 	}
 
 	if len(data)%codec.IndexEntrySize != 0 {
-		return nil, ErrFormat{Format: "index file", Err: fmt.Errorf("invalid file size")}
+		return nil, fmt.Errorf("invalid index file size")
 	}
 
 	entryCount := len(data) / codec.IndexEntrySize
