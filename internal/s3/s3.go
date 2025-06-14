@@ -24,7 +24,6 @@ type Config struct {
 // This matches the previous AWS SDK based implementation.
 type Client interface {
 	Upload(ctx context.Context, key string, data []byte) error
-	Append(ctx context.Context, key string, data []byte) error
 	Download(ctx context.Context, key string) ([]byte, error)
 	DownloadRange(ctx context.Context, key string, start, end int64) ([]byte, error)
 	ObjectExists(ctx context.Context, key string) (bool, error)
@@ -75,86 +74,6 @@ func (c *S3Client) Upload(ctx context.Context, key string, data []byte) error {
 	fullKey := c.buildKey(key)
 	if _, err := c.bucket.Put(fullKey, data); err != nil {
 		return ErrS3Operation{Operation: "put", Err: err}
-	}
-	return nil
-}
-
-// Append appends data to an existing object; if the object does not exist it is created.
-func (c *S3Client) Append(ctx context.Context, key string, data []byte) error {
-	fullKey := c.buildKey(key)
-
-	f, err := c.bucket.Open(fullKey)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			_, err = c.bucket.Put(fullKey, data)
-			if err != nil {
-				return ErrS3Operation{Operation: "put", Err: err}
-			}
-			return nil
-		}
-		return ErrS3Operation{Operation: "head", Err: err}
-	}
-	defer f.Close()
-
-	s3f, ok := f.(*s3lib.File)
-	if !ok {
-		return ErrS3Operation{Operation: "open", Err: fmt.Errorf("not a file")}
-	}
-
-	// If existing object is small, download and re-upload.
-	if s3f.Reader.Size < int64(s3lib.MinPartSize) {
-		existing, err := io.ReadAll(s3f)
-		if err != nil {
-			return ErrS3Operation{Operation: "read", Err: err}
-		}
-		combined := append(existing, data...)
-		_, err = c.bucket.Put(fullKey, combined)
-		if err != nil {
-			return ErrS3Operation{Operation: "put", Err: err}
-		}
-		return nil
-	}
-
-	// Use multipart upload + server side copy for larger objects.
-	up := s3lib.Uploader{
-		Key:    c.key,
-		Bucket: c.bucketName,
-		Client: c.bucket.Client,
-		Object: fullKey,
-	}
-	if err := up.Start(); err != nil {
-		return ErrS3Operation{Operation: "start", Err: err}
-	}
-	src := &s3lib.Reader{
-		Key:    c.key,
-		Client: c.bucket.Client,
-		Bucket: c.bucketName,
-		Path:   fullKey,
-		ETag:   s3f.ETag,
-		Size:   s3f.Reader.Size,
-	}
-	if err := up.CopyFrom(1, src, 0, 0); err != nil {
-		up.Abort()
-		return ErrS3Operation{Operation: "copy", Err: err}
-	}
-
-	// When appending small data, use Close to upload the final part.
-	if len(data) < s3lib.MinPartSize {
-		if err := up.Close(data); err != nil {
-			up.Abort()
-			return ErrS3Operation{Operation: "close", Err: err}
-		}
-		return nil
-	}
-
-	// For larger data use a normal part upload then finalize.
-	if err := up.Upload(2, data); err != nil {
-		up.Abort()
-		return ErrS3Operation{Operation: "upload", Err: err}
-	}
-	if err := up.Close(nil); err != nil {
-		up.Abort()
-		return ErrS3Operation{Operation: "close", Err: err}
 	}
 	return nil
 }

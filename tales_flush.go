@@ -32,7 +32,7 @@ func (l *Service) flushBuffer(ctx context.Context, buf *buffer.Buffer) error {
 	date := seq.FormatDate(now)
 	flushTimeMinutes := uint32(now.Sub(day).Minutes())
 
-	_, tidx, alog, aidx := buildDailyKeys(date)
+	_, tidx, _, _ := buildDailyKeys(date)
 
 	// 1. Read existing metadata file.
 	var meta *codec.Metadata
@@ -59,26 +59,32 @@ func (l *Service) flushBuffer(ctx context.Context, buf *buffer.Buffer) error {
 	// 3. Update metadata with new chunk info (offset stores chunk number).
 	chunkOffset := chunkNumber
 
-	// 4. Handle bitmaps and index entries.
-	bitmapChunkOffset := meta.TotalBitmapSize
+	// 4. Handle bitmaps and index entries as separate files for this chunk.
+	var bitmapData []byte
+	var indexData []byte
+	var bitmapOffset uint32
 	for _, rbm := range res.Index {
-		if err := l.s3Client.Append(ctx, alog, rbm.CompressedData); err != nil {
-			return err
-		}
-		indexEntry := codec.NewIndexEntry(flushTimeMinutes, rbm.ActorID, uint64(bitmapChunkOffset), rbm.CompressedSize, rbm.UncompressedSize)
-		if err := l.s3Client.Append(ctx, aidx, indexEntry); err != nil {
-			return err
-		}
-		bitmapChunkOffset += rbm.CompressedSize
+		indexEntry := codec.NewIndexEntry(flushTimeMinutes, rbm.ActorID, uint64(bitmapOffset), rbm.CompressedSize, rbm.UncompressedSize)
+		indexData = append(indexData, indexEntry...)
+		bitmapData = append(bitmapData, rbm.CompressedData...)
+		bitmapOffset += rbm.CompressedSize
 	}
 
-	meta.Update(chunkOffset, res.Data.CompressedSize, res.Data.UncompressedSize, bitmapChunkOffset)
+	if len(bitmapData) > 0 {
+		if err := l.s3Client.Upload(ctx, buildBitmapKey(date, chunkNumber), bitmapData); err != nil {
+			return err
+		}
+		if err := l.s3Client.Upload(ctx, buildIndexKey(date, chunkNumber), indexData); err != nil {
+			return err
+		}
+	}
+
+	meta.Update(chunkOffset, res.Data.CompressedSize, res.Data.UncompressedSize)
 
 	// 5. Encode the metadata as JSON and upload it, overwriting the old one.
 	encodedMeta, err := codec.EncodeMetadata(meta)
 	if err != nil {
 		return fmt.Errorf("failed to encode metadata: %w", err)
 	}
-	meta.Size = uint32(len(encodedMeta))
 	return l.s3Client.Upload(ctx, tidx, encodedMeta)
 }

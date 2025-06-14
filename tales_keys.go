@@ -15,3 +15,13 @@ func buildDailyKeys(date string) (threadsLog, threadsIdx, actorsLog, actorsIdx s
 func buildChunkKey(date string, chunk uint64) string {
 	return fmt.Sprintf("%s/%d.log", date, chunk)
 }
+
+// buildBitmapKey builds S3 key for bitmap data of a specific chunk.
+func buildBitmapKey(date string, chunk uint64) string {
+	return fmt.Sprintf("%s/%d.rbm", date, chunk)
+}
+
+// buildIndexKey builds S3 key for index data of a specific chunk.
+func buildIndexKey(date string, chunk uint64) string {
+	return fmt.Sprintf("%s/%d.idx", date, chunk)
+}

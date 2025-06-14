@@ -98,6 +98,11 @@ func TestBuildDailyKeys(t *testing.T) {
 	assert.Equal(t, "2023-01-02/threads.idx", tidx)
 	assert.Equal(t, "2023-01-02/actors.log", alog)
 	assert.Equal(t, "2023-01-02/actors.idx", aidx)
+
+	chunk := uint64(5)
+	assert.Equal(t, "2023-01-02/5.log", buildChunkKey("2023-01-02", chunk))
+	assert.Equal(t, "2023-01-02/5.rbm", buildBitmapKey("2023-01-02", chunk))
+	assert.Equal(t, "2023-01-02/5.idx", buildIndexKey("2023-01-02", chunk))
 }
 
 func newService() (*Service, error) {
