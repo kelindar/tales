@@ -32,10 +32,7 @@ func (l *Service) flushBuffer(ctx context.Context, buf *buffer.Buffer) error {
 	date := seq.FormatDate(now)
 	flushTimeMinutes := uint32(now.Sub(day).Minutes())
 
-	tlog := fmt.Sprintf("%s/threads.log", date)
-	tidx := fmt.Sprintf("%s/threads.idx", date)
-	alog := fmt.Sprintf("%s/actors.log", date)
-	aidx := fmt.Sprintf("%s/actors.idx", date)
+	tlog, tidx, alog, aidx := buildDailyKeys(date)
 
 	// 1. Read existing metadata file.
 	var meta *codec.Metadata

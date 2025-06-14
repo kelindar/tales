@@ -43,10 +43,7 @@ func (l *Service) queryDay(ctx context.Context, actor uint32, day time.Time, fro
 	date := seq.FormatDate(day)
 
 	// Build S3 keys
-	tlog := fmt.Sprintf("%s/threads.log", date)
-	tidx := fmt.Sprintf("%s/threads.idx", date)
-	alog := fmt.Sprintf("%s/actors.log", date)
-	aidx := fmt.Sprintf("%s/actors.idx", date)
+	tlog, tidx, alog, aidx := buildDailyKeys(date)
 
 	// 1. Download and parse index file
 	entries, err := l.loadIndexFile(ctx, aidx)
