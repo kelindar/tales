@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"time"
 
-	"github.com/kelindar/threads/internal/seq"
+	"github.com/kelindar/tales/internal/seq"
 )
 
 const (

@@ -1,14 +1,14 @@
-package threads
+package tales
 
 import (
 	"context"
 	"fmt"
 	"time"
 
-	"github.com/kelindar/threads/internal/buffer"
-	"github.com/kelindar/threads/internal/codec"
-	"github.com/kelindar/threads/internal/s3"
-	"github.com/kelindar/threads/internal/seq"
+	"github.com/kelindar/tales/internal/buffer"
+	"github.com/kelindar/tales/internal/codec"
+	"github.com/kelindar/tales/internal/s3"
+	"github.com/kelindar/tales/internal/seq"
 )
 
 // flushBuffer flushes the current buffer to S3 using a separate metadata file.
@@ -33,8 +33,8 @@ func (l *Service) flushBuffer(buf *buffer.Buffer) error {
 	date := seq.FormatDate(now)
 	flushTimeMinutes := uint32(now.Sub(day).Minutes())
 
-	tlog := fmt.Sprintf("%s/threads.log", date)
-	tidx := fmt.Sprintf("%s/threads.idx", date)
+	tlog := fmt.Sprintf("%s/tales.log", date)
+	tidx := fmt.Sprintf("%s/tales.idx", date)
 	alog := fmt.Sprintf("%s/actors.log", date)
 	aidx := fmt.Sprintf("%s/actors.idx", date)
 

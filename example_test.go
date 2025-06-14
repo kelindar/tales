@@ -1,4 +1,4 @@
-package threads
+package tales
 
 import (
 	"context"
@@ -7,10 +7,10 @@ import (
 	"time"
 
 	s3mock "github.com/kelindar/s3/mock"
-	"github.com/kelindar/threads/internal/s3"
+	"github.com/kelindar/tales/internal/s3"
 )
 
-// Example demonstrates basic usage of the threads library
+// Example demonstrates basic usage of the tales library
 func Example() {
 	// Use a mock S3 server for the example
 	mockServer := s3mock.New("example-bucket", "us-east-1")

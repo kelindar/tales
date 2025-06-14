@@ -1,4 +1,4 @@
-package threads
+package tales
 
 import (
 	"context"
@@ -8,10 +8,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/kelindar/threads/internal/buffer"
-	"github.com/kelindar/threads/internal/codec"
-	"github.com/kelindar/threads/internal/s3"
-	"github.com/kelindar/threads/internal/seq"
+	"github.com/kelindar/tales/internal/buffer"
+	"github.com/kelindar/tales/internal/codec"
+	"github.com/kelindar/tales/internal/s3"
+	"github.com/kelindar/tales/internal/seq"
 )
 
 // logCmd represents a command to log an entry.

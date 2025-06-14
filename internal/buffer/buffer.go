@@ -6,7 +6,7 @@ import (
 	"iter"
 
 	"github.com/RoaringBitmap/roaring/v2"
-	"github.com/kelindar/threads/internal/codec"
+	"github.com/kelindar/tales/internal/codec"
 )
 
 // Buffer represents the in-memory buffer for the current chunk.

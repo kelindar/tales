@@ -1,4 +1,4 @@
-module github.com/kelindar/threads
+module github.com/kelindar/tales
 
 go 1.24.2
 

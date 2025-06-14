@@ -1,4 +1,4 @@
-package threads
+package tales
 
 import (
 	"context"
@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/RoaringBitmap/roaring/v2"
-	"github.com/kelindar/threads/internal/codec"
-	"github.com/kelindar/threads/internal/seq"
+	"github.com/kelindar/tales/internal/codec"
+	"github.com/kelindar/tales/internal/seq"
 )
 
 // queryMemory queries the in-memory buffer for entries.
@@ -43,8 +43,8 @@ func (l *Service) queryDay(ctx context.Context, actor uint32, day time.Time, fro
 	date := seq.FormatDate(day)
 
 	// Build S3 keys
-	tlog := fmt.Sprintf("%s/threads.log", date)
-	tidx := fmt.Sprintf("%s/threads.idx", date)
+	tlog := fmt.Sprintf("%s/tales.log", date)
+	tidx := fmt.Sprintf("%s/tales.idx", date)
 	alog := fmt.Sprintf("%s/actors.log", date)
 	aidx := fmt.Sprintf("%s/actors.idx", date)
 

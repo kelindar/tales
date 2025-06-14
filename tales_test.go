@@ -1,4 +1,4 @@
-package threads
+package tales
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"time"
 
 	s3mock "github.com/kelindar/s3/mock"
-	"github.com/kelindar/threads/internal/s3"
+	"github.com/kelindar/tales/internal/s3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
