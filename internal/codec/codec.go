@@ -3,6 +3,8 @@ package codec
 import (
 	"encoding/binary"
 	"time"
+
+	"github.com/kelindar/threads/internal/seq"
 )
 
 const (
@@ -54,7 +56,7 @@ func NewLogEntry(sequenceID uint32, text string, actors []uint32) (LogEntry, err
 // ID extracts the sequence ID from a log entry
 // Time reconstructs the timestamp from the day-start and sequence ID.
 func (e LogEntry) Time(dayStart time.Time) time.Time {
-	return dayStart.Add(time.Duration(e.ID()) * time.Second)
+	return seq.TimeOf(e.ID(), dayStart)
 }
 
 // ID extracts the sequence ID from a log entry
