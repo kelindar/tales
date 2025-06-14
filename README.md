@@ -182,7 +182,6 @@ type S3Config struct {
     Bucket          string
     Region          string
     Prefix          string
-    Concurrency     int    // Unused, kept for compatibility
     Retries         int    // Unused, kept for compatibility
     // AWS credentials via environment or IAM roles
 }

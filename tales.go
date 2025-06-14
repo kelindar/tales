@@ -25,7 +25,6 @@ type queryCmd struct {
 	actor uint32
 	from  time.Time
 	to    time.Time
-	yield func(time.Time, string) bool
 	ret   chan<- iter.Seq[codec.LogEntry]
 }
 

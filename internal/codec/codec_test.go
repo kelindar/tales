@@ -170,7 +170,4 @@ func TestConstants(t *testing.T) {
 		assert.Equal(t, 24, IndexEntrySize)
 	})
 
-	t.Run("Magic", func(t *testing.T) {
-		assert.Equal(t, "TAIL", TailMagic)
-	})
 }

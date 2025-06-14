@@ -7,11 +7,9 @@ import (
 
 const (
 	// Sequence ID format constants
-	minuteBits  = 12                     // High 12 bits for minutes (0-1439)
 	counterBits = 20                     // Low 20 bits for counter (0-1048575)
 	counterMask = (1 << counterBits) - 1 // 0xFFFFF
 	maxMinutes  = 1439                   // Maximum minutes in a day (24*60-1)
-	maxCounter  = (1 << counterBits) - 1 // Maximum counter value
 )
 
 // Sequence generates unique Sequence IDs for a specific day.
