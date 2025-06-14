@@ -12,8 +12,7 @@ import (
 )
 
 // flushBuffer flushes the current buffer to S3 using a separate metadata file.
-func (l *Service) flushBuffer(buf *buffer.Buffer) error {
-	ctx := context.Background()
+func (l *Service) flushBuffer(ctx context.Context, buf *buffer.Buffer) error {
 
 	if buf.Size() == 0 {
 		return nil
@@ -82,12 +81,5 @@ func (l *Service) flushBuffer(buf *buffer.Buffer) error {
 		return fmt.Errorf("failed to encode metadata: %w", err)
 	}
 	meta.Size = uint32(len(encodedMeta))
-
-	// Re-encode with correct size
-	encodedMeta, err = codec.EncodeMetadata(meta)
-	if err != nil {
-		return fmt.Errorf("failed to re-encode metadata: %w", err)
-	}
-
 	return l.s3Client.Upload(ctx, tidx, encodedMeta)
 }

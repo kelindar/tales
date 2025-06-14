@@ -156,7 +156,7 @@ func (l *Service) run(ctx context.Context) {
 		select {
 		case cmd, ok := <-l.commands:
 			if !ok {
-				l.flushBuffer(buf) // Final flush on close
+				l.flushBuffer(ctx, buf) // Final flush on close
 				return
 			}
 
@@ -166,13 +166,13 @@ func (l *Service) run(ctx context.Context) {
 
 				// Check if we need to flush for a new day
 				if seq.DayOf(now) != seqGen.Day() {
-					l.flushBuffer(buf)
+					l.flushBuffer(ctx, buf)
 				}
 
 				sequenceID := seqGen.Next(now)
 				entry, _ := codec.NewLogEntry(sequenceID, c.text, c.actors)
 				if !buf.Add(entry) {
-					l.flushBuffer(buf)
+					l.flushBuffer(ctx, buf)
 					buf.Add(entry) // Must succeed
 				}
 
@@ -181,14 +181,14 @@ func (l *Service) run(ctx context.Context) {
 				c.ret <- results
 
 			case flushCmd:
-				l.flushBuffer(buf)
+				l.flushBuffer(ctx, buf)
 				if c.done != nil {
 					close(c.done)
 				}
 			}
 
 		case <-ticker.C:
-			l.flushBuffer(buf)
+			l.flushBuffer(ctx, buf)
 		case <-ctx.Done():
 			return
 		}
