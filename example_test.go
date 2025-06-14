@@ -23,7 +23,7 @@ func Example() {
 		WithPrefix("events"),
 		WithChunkInterval(5*time.Minute),
 		WithBufferSize(1000),
-		WithS3Client(func(ctx context.Context, cfg s3.Config) (s3.Client, error) {
+		WithClient(func(ctx context.Context, cfg s3.Config) (s3.Client, error) {
 			return s3.NewMockClient(ctx, mockServer, cfg)
 		}),
 	)

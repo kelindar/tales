@@ -102,7 +102,7 @@ func newService() (*Service, error) {
 		WithPrefix("test-prefix"),
 		WithChunkInterval(1*time.Minute),
 		WithBufferSize(1024*1024),
-		WithS3Client(func(ctx context.Context, config s3.Config) (s3.Client, error) {
+		WithClient(func(ctx context.Context, config s3.Config) (s3.Client, error) {
 			return s3.NewMockClient(ctx, mockS3, config)
 		}),
 	)
