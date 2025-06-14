@@ -2,6 +2,7 @@ package tales
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"iter"
 	"sync"
@@ -14,10 +15,14 @@ import (
 	"github.com/kelindar/tales/internal/seq"
 )
 
-// logCmd represents a command to log an entry.
-type logCmd struct {
-	text   string
-	actors []uint32
+// logCmd is an alias to a prepared log entry.
+type logCmd = codec.LogEntry
+
+// command groups different commands passed through the service channel.
+type command struct {
+	log   *logCmd
+	query *queryCmd
+	flush *flushCmd
 }
 
 // queryCmd represents a command to query the buffer.
@@ -38,7 +43,7 @@ type Service struct {
 	config   config
 	s3Client s3.Client
 	codec    *codec.Codec
-	commands chan interface{}
+	commands chan command
 	wg       sync.WaitGroup
 	cancel   context.CancelFunc
 	closed   int32 // atomic flag
@@ -81,7 +86,7 @@ func New(bucket, region string, opts ...Option) (*Service, error) {
 		config:   cfg,
 		s3Client: s3Client,
 		codec:    codecInstance,
-		commands: make(chan interface{}, cfg.BufferSize),
+		commands: make(chan command, cfg.BufferSize),
 		cancel:   cancel,
 	}
 
@@ -106,7 +111,8 @@ func (l *Service) Log(text string, actors ...uint32) error {
 	case atomic.LoadInt32(&l.closed) != 0:
 		return fmt.Errorf("cannot log to closed logger")
 	default:
-		l.commands <- logCmd{text: text, actors: actors}
+		entry, _ := codec.NewLogEntry(0, text, actors)
+		l.commands <- command{log: (*logCmd)(&entry)}
 		return nil
 	}
 }
@@ -160,8 +166,7 @@ func (l *Service) run(ctx context.Context) {
 				return
 			}
 
-			switch c := cmd.(type) {
-			case logCmd:
+			if c := cmd.log; c != nil {
 				now := time.Now().UTC()
 
 				// Check if we need to flush for a new day
@@ -170,21 +175,27 @@ func (l *Service) run(ctx context.Context) {
 				}
 
 				sequenceID := seqGen.Next(now)
-				entry, _ := codec.NewLogEntry(sequenceID, c.text, c.actors)
+				binary.LittleEndian.PutUint32((*c)[:4], sequenceID)
+				entry := codec.LogEntry(*c)
 				if !buf.Add(entry) {
 					l.flushBuffer(ctx, buf)
 					buf.Add(entry) // Must succeed
 				}
+				continue
+			}
 
-			case queryCmd:
+			if c := cmd.query; c != nil {
 				results := buf.Query(c.actor, seqGen.Day(), c.from, c.to)
 				c.ret <- results
+				continue
+			}
 
-			case flushCmd:
+			if c := cmd.flush; c != nil {
 				l.flushBuffer(ctx, buf)
 				if c.done != nil {
 					close(c.done)
 				}
+				continue
 			}
 
 		case <-ticker.C:
@@ -198,6 +209,6 @@ func (l *Service) run(ctx context.Context) {
 // flushBuffer flushes the buffer and waits (for testing).
 func (l *Service) flush() {
 	done := make(chan struct{})
-	l.commands <- flushCmd{done: done}
+	l.commands <- command{flush: &flushCmd{done: done}}
 	<-done
 }

@@ -14,7 +14,7 @@ import (
 // queryMemory queries the in-memory buffer for entries.
 func (l *Service) queryMemory(actor uint32, from, to time.Time, yield func(time.Time, string) bool) {
 	ret := make(chan iter.Seq[codec.LogEntry], 1)
-	l.commands <- queryCmd{actor: actor, from: from, to: to, ret: ret}
+	l.commands <- command{query: &queryCmd{actor: actor, from: from, to: to, ret: ret}}
 
 	day := seq.DayOf(from)
 	for entry := range <-ret {
