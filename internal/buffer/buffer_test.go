@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kelindar/threads/internal/codec"
-	"github.com/kelindar/threads/internal/seq"
+	"github.com/kelindar/tales/internal/codec"
+	"github.com/kelindar/tales/internal/seq"
 	"github.com/stretchr/testify/assert"
 )
 
