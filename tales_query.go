@@ -43,38 +43,44 @@ func (l *Service) queryDay(ctx context.Context, actor uint32, day time.Time, fro
 	date := seq.FormatDate(day)
 
 	// Build S3 keys
-	_, tidx, alog, aidx := buildDailyKeys(date)
+	_, tidx, _, _ := buildDailyKeys(date)
 
-	// 1. Download and parse index file
-	entries, err := l.loadIndexFile(ctx, aidx)
-	if err != nil {
-		return true // If index file doesn't exist, skip this day
-	}
-
-	// 2. Filter index entries by actor and time range
-	if entries = l.filterEntries(entries, actor, day, from, to); len(entries) == 0 {
-		return true
-	}
-
-	// 3. Download and merge bitmap chunks
-	bm, err := l.mergeBitmaps(ctx, alog, entries)
-	if err != nil || bm.IsEmpty() {
-		return true // Skip on error
-	}
-
-	// 4. Download metadata file to get chunk information
+	// Download metadata file
 	metaBytes, err := l.s3Client.Download(ctx, tidx)
 	if err != nil || len(metaBytes) == 0 {
-		return true // If meta file doesn't exist, there's no data for this day.
+		return true
 	}
 
 	meta, err := codec.DecodeMetadata(metaBytes)
 	if err != nil || meta == nil {
-		return true // Corrupted metadata.
+		return true
 	}
 
-	// 5. Group sequence IDs by log chunks and query
-	return l.queryChunks(ctx, date, meta, bm, day, from, to, yield)
+	// For each chunk, load its index and bitmap files
+	for _, chunk := range meta.Chunks {
+		indexKey := buildIndexKey(date, chunk.Offset())
+		entries, err := l.loadIndexFile(ctx, indexKey)
+		if err != nil {
+			continue
+		}
+		entries = l.filterEntries(entries, actor, day, from, to)
+		if len(entries) == 0 {
+			continue
+		}
+
+		bitmapKey := buildBitmapKey(date, chunk.Offset())
+		bm, err := l.mergeBitmaps(ctx, bitmapKey, entries)
+		if err != nil || bm.IsEmpty() {
+			continue
+		}
+
+		chunkKey := buildChunkKey(date, chunk.Offset())
+		if !l.queryChunk(ctx, chunkKey, chunk, bm, day, from, to, yield) {
+			return false
+		}
+	}
+
+	return true
 }
 
 // loadIndexFile downloads and parses the index file.

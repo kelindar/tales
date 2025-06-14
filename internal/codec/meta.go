@@ -7,12 +7,9 @@ import (
 
 // Metadata represents the metadata structure for log files.
 type Metadata struct {
-	DayStart        int64        `json:"day_start"`
-	ChunkCount      uint32       `json:"chunk_count"`
-	Chunks          []ChunkEntry `json:"chunks"`
-	Size            uint32       `json:"tail_size"`
-	TotalDataSize   uint32       `json:"total_data_size"`
-	TotalBitmapSize uint32       `json:"total_bitmap_size"`
+	DayStart   int64        `json:"day_start"`
+	ChunkCount uint32       `json:"chunk_count"`
+	Chunks     []ChunkEntry `json:"chunks"`
 }
 
 // NewMetadata creates a new metadata instance with default values.
@@ -37,10 +34,8 @@ func DecodeMetadata(data []byte) (*Metadata, error) {
 }
 
 // Update adds a new chunk and updates bitmap size.
-func (m *Metadata) Update(offset uint64, compressedSize, uncompressedSize, bitmapSize uint32) {
+func (m *Metadata) Update(offset uint64, compressedSize, uncompressedSize uint32) {
 	newChunk := NewChunkEntry(offset, compressedSize, uncompressedSize)
 	m.Chunks = append(m.Chunks, newChunk)
-	m.TotalDataSize += compressedSize
 	m.ChunkCount = uint32(len(m.Chunks))
-	m.TotalBitmapSize = bitmapSize
 }
