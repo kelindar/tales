@@ -8,16 +8,51 @@ import (
 	"github.com/kelindar/threads/internal/s3"
 )
 
-// Config represents the configuration for the threads logger.
-type Config struct {
-	S3Config      s3.Config     // S3 configuration (required)
-	ChunkInterval time.Duration // Chunk completion interval (default: 5 minutes)
-	BufferSize    int           // Memory buffer size (default: 1000 entries)
+// Option configures the Service. All options are optional and may be provided
+// to New when constructing a logger.
+type Option func(*config)
+
+// WithChunkInterval sets the interval at which in-memory chunks are flushed.
+func WithChunkInterval(d time.Duration) Option {
+	return func(c *config) { c.ChunkInterval = d }
+}
+
+// WithBufferSize sets the maximum number of entries kept in memory.
+func WithBufferSize(size int) Option {
+	return func(c *config) { c.BufferSize = size }
+}
+
+// WithPrefix sets the S3 key prefix to use when storing objects.
+func WithPrefix(prefix string) Option {
+	return func(c *config) { c.S3Config.Prefix = prefix }
+}
+
+// WithS3Concurrency sets the (unused) concurrency parameter on the S3 config.
+func WithS3Concurrency(n int) Option {
+	return func(c *config) { c.S3Config.Concurrency = n }
+}
+
+// WithS3Retries sets the (unused) retries parameter on the S3 config.
+func WithS3Retries(n int) Option {
+	return func(c *config) { c.S3Config.Retries = n }
+}
+
+// WithS3Client allows overriding the S3 client creation function.
+func WithS3Client(fn func(context.Context, s3.Config) (s3.Client, error)) Option {
+	return func(c *config) { c.NewS3Client = fn }
+}
+
+// config holds all configuration for the logger. It is kept private and
+// manipulated through Option helpers.
+type config struct {
+	S3Config      s3.Config
+	ChunkInterval time.Duration
+	BufferSize    int
 	NewS3Client   func(context.Context, s3.Config) (s3.Client, error)
 }
 
 // setDefaults applies default values to the configuration.
-func (c *Config) setDefaults() {
+func (c *config) setDefaults() {
 	if c.ChunkInterval == 0 {
 		c.ChunkInterval = 5 * time.Minute
 	}
@@ -33,7 +68,7 @@ func (c *Config) setDefaults() {
 }
 
 // validate checks if the configuration is valid.
-func (c *Config) validate() error {
+func (c *config) validate() error {
 	switch {
 	case c.S3Config.Bucket == "":
 		return fmt.Errorf("S3 bucket is required")
