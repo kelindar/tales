@@ -36,7 +36,7 @@ type flushCmd struct {
 
 // Service provides high-performance, memory-efficient logging and querying.
 type Service struct {
-	config   Config
+	config   config
 	s3Client s3.Client
 	codec    *codec.Codec
 	commands chan interface{}
@@ -45,11 +45,17 @@ type Service struct {
 	closed   int32 // atomic flag
 }
 
-// New creates a new Logger instance with the given configuration.
-func New(config Config) (*Service, error) {
+// New creates a new logger using the provided S3 bucket and region. Optional
+// behaviour can be configured via Option functions.
+func New(bucket, region string, opts ...Option) (*Service, error) {
+	cfg := config{S3Config: s3.Config{Bucket: bucket, Region: region}}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
 	// Set defaults and validate configuration
-	config.setDefaults()
-	if err := config.validate(); err != nil {
+	cfg.setDefaults()
+	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
 
@@ -61,10 +67,10 @@ func New(config Config) (*Service, error) {
 
 	// Create S3 client
 	var s3Client s3.Client
-	if config.NewS3Client != nil {
-		s3Client, err = config.NewS3Client(context.Background(), config.S3Config)
+	if cfg.NewS3Client != nil {
+		s3Client, err = cfg.NewS3Client(context.Background(), cfg.S3Config)
 	} else {
-		s3Client, err = s3.NewClient(context.Background(), config.S3Config)
+		s3Client, err = s3.NewClient(context.Background(), cfg.S3Config)
 	}
 	if err != nil {
 		codecInstance.Close()
@@ -73,10 +79,10 @@ func New(config Config) (*Service, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	logger := &Service{
-		config:   config,
+		config:   cfg,
 		s3Client: s3Client,
 		codec:    codecInstance,
-		commands: make(chan interface{}, config.BufferSize),
+		commands: make(chan interface{}, cfg.BufferSize),
 		cancel:   cancel,
 	}
 

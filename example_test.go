@@ -16,17 +16,17 @@ func Example() {
 	mockServer := s3mock.New("example-bucket", "us-east-1")
 	defer mockServer.Close()
 
-	config := Config{
-		S3Config:      s3.CreateConfigForMock(mockServer, "example-bucket", "events"),
-		ChunkInterval: 5 * time.Minute,
-		BufferSize:    1000,
-		NewS3Client: func(ctx context.Context, cfg s3.Config) (s3.Client, error) {
-			return s3.NewMockClient(ctx, mockServer, cfg)
-		},
-	}
-
 	// Create logger
-	logger, err := New(config)
+	logger, err := New(
+		"example-bucket",
+		"us-east-1",
+		WithPrefix("events"),
+		WithChunkInterval(5*time.Minute),
+		WithBufferSize(1000),
+		WithS3Client(func(ctx context.Context, cfg s3.Config) (s3.Client, error) {
+			return s3.NewMockClient(ctx, mockServer, cfg)
+		}),
+	)
 	if err != nil {
 		log.Fatal(err)
 	}

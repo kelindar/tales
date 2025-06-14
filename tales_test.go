@@ -96,18 +96,14 @@ func newService() (*Service, error) {
 	// Create a mock S3 server
 	mockS3 := s3mock.New("test-bucket", "us-east-1")
 
-	// Create S3 config for mock server
-	s3Config := s3.CreateConfigForMock(mockS3, "test-bucket", "test-prefix")
-
-	// Create logger config
-	config := Config{
-		ChunkInterval: 1 * time.Minute,
-		BufferSize:    1024 * 1024, // 1MB
-		S3Config:      s3Config,
-		NewS3Client: func(ctx context.Context, config s3.Config) (s3.Client, error) {
+	return New(
+		"test-bucket",
+		"us-east-1",
+		WithPrefix("test-prefix"),
+		WithChunkInterval(1*time.Minute),
+		WithBufferSize(1024*1024),
+		WithS3Client(func(ctx context.Context, config s3.Config) (s3.Client, error) {
 			return s3.NewMockClient(ctx, mockS3, config)
-		},
-	}
-
-	return New(config)
+		}),
+	)
 }
