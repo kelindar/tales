@@ -1,30 +1,28 @@
 package s3
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"strings"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	s3lib "github.com/kelindar/s3"
+	"github.com/kelindar/s3/aws"
 )
 
 // Config represents the S3-specific configuration.
 type Config struct {
 	Bucket      string // S3 bucket name (required)
-	Region      string // AWS region (required)
+	Region      string // AWS region (required for mock)
 	Prefix      string // S3 key prefix (optional)
-	Concurrency int    // Max concurrent S3 requests (default: 10)
-	Retries     int    // Retry attempts for failed requests (default: 3)
-	// AWS credentials are handled via environment variables or IAM roles
+	Concurrency int    // Unused but kept for compatibility
+	Retries     int    // Unused but kept for compatibility
 }
 
 // Client interface abstracts S3 operations for easier testing and mocking
+// This matches the previous AWS SDK based implementation.
 type Client interface {
 	Upload(ctx context.Context, key string, data []byte) error
 	Append(ctx context.Context, key string, data []byte) error
@@ -44,34 +42,25 @@ func (e ErrS3Operation) Error() string {
 	return fmt.Sprintf("S3 operation failed (%s): %v", e.Operation, e.Err)
 }
 
-func (e ErrS3Operation) Unwrap() error {
-	return e.Err
-}
+func (e ErrS3Operation) Unwrap() error { return e.Err }
 
-// S3Client wraps the AWS S3 client with retry logic and convenience methods.
+// S3Client wraps the kelindar/s3 bucket with convenience methods.
 type S3Client struct {
-	client        *s3.Client
-	bucket        string
-	prefix        string
-	maxConcurrent int
-	retryAttempts int
+	bucket     *s3lib.Bucket
+	key        *aws.SigningKey
+	bucketName string
+	prefix     string
 }
 
-// NewClient creates a new S3 client with the given configuration.
-func NewClient(ctx context.Context, s3Config Config) (Client, error) {
-	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(s3Config.Region))
+// NewClient creates a new client using ambient credentials.
+func NewClient(ctx context.Context, cfg Config) (Client, error) {
+	key, err := aws.AmbientKey("s3", s3lib.DeriveForBucket(cfg.Bucket))
 	if err != nil {
-		return nil, ErrS3Operation{Operation: "load config", Err: err}
+		return nil, ErrS3Operation{Operation: "credentials", Err: err}
 	}
-
-	client := s3.NewFromConfig(cfg)
-	return &S3Client{
-		client:        client,
-		bucket:        s3Config.Bucket,
-		prefix:        s3Config.Prefix,
-		maxConcurrent: s3Config.Concurrency,
-		retryAttempts: s3Config.Retries,
-	}, nil
+	bucket := s3lib.NewBucket(ctx, key, cfg.Bucket)
+	bucket.Lazy = true
+	return &S3Client{bucket: bucket, key: key, bucketName: cfg.Bucket, prefix: cfg.Prefix}, nil
 }
 
 // buildKey constructs an S3 key with the configured prefix.
@@ -82,244 +71,151 @@ func (c *S3Client) buildKey(key string) string {
 	return strings.TrimSuffix(c.prefix, "/") + "/" + key
 }
 
-// Append appends data to an existing S3 object using a multipart upload.
-// If the object does not exist it will be created.
+// Upload overwrites an S3 object with the given data.
+func (c *S3Client) Upload(ctx context.Context, key string, data []byte) error {
+	fullKey := c.buildKey(key)
+	if _, err := c.bucket.Put(fullKey, data); err != nil {
+		return ErrS3Operation{Operation: "put", Err: err}
+	}
+	return nil
+}
+
+// Append appends data to an existing object; if the object does not exist it is created.
 func (c *S3Client) Append(ctx context.Context, key string, data []byte) error {
 	fullKey := c.buildKey(key)
 
-	exists, err := c.ObjectExists(ctx, key)
+	f, err := c.bucket.Open(fullKey)
 	if err != nil {
-		return err
+		if errors.Is(err, fs.ErrNotExist) {
+			_, err = c.bucket.Put(fullKey, data)
+			if err != nil {
+				return ErrS3Operation{Operation: "put", Err: err}
+			}
+			return nil
+		}
+		return ErrS3Operation{Operation: "head", Err: err}
+	}
+	defer f.Close()
+
+	s3f, ok := f.(*s3lib.File)
+	if !ok {
+		return ErrS3Operation{Operation: "open", Err: fmt.Errorf("not a file")}
 	}
 
-	// If the object doesn't exist simply create it
-	if !exists {
-		for attempt := 0; attempt <= c.retryAttempts; attempt++ {
-			_, err := c.client.PutObject(ctx, &s3.PutObjectInput{
-				Bucket: aws.String(c.bucket),
-				Key:    aws.String(fullKey),
-				Body:   bytes.NewReader(data),
-			})
-			if err == nil {
-				return nil
-			}
-			if attempt == c.retryAttempts {
-				return ErrS3Operation{Operation: "put object", Err: err}
-			}
+	// If existing object is small, download and re-upload.
+	if s3f.Reader.Size < int64(s3lib.MinPartSize) {
+		existing, err := io.ReadAll(s3f)
+		if err != nil {
+			return ErrS3Operation{Operation: "read", Err: err}
+		}
+		combined := append(existing, data...)
+		_, err = c.bucket.Put(fullKey, combined)
+		if err != nil {
+			return ErrS3Operation{Operation: "put", Err: err}
 		}
 		return nil
 	}
 
-	// Start multipart upload
-	var uploadID string
-	for attempt := 0; attempt <= c.retryAttempts; attempt++ {
-		resp, err := c.client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
-			Bucket: aws.String(c.bucket),
-			Key:    aws.String(fullKey),
-		})
-		if err == nil {
-			uploadID = aws.ToString(resp.UploadId)
-			break
-		}
-		if attempt == c.retryAttempts {
-			return ErrS3Operation{Operation: "create multipart upload", Err: err}
-		}
+	// Use multipart upload + server side copy for larger objects.
+	up := s3lib.Uploader{
+		Key:    c.key,
+		Bucket: c.bucketName,
+		Client: c.bucket.Client,
+		Object: fullKey,
+	}
+	if err := up.Start(); err != nil {
+		return ErrS3Operation{Operation: "start", Err: err}
+	}
+	src := &s3lib.Reader{
+		Key:    c.key,
+		Client: c.bucket.Client,
+		Bucket: c.bucketName,
+		Path:   fullKey,
+		ETag:   s3f.ETag,
+		Size:   s3f.Reader.Size,
+	}
+	if err := up.CopyFrom(1, src, 0, 0); err != nil {
+		up.Abort()
+		return ErrS3Operation{Operation: "copy", Err: err}
 	}
 
-	completed := make([]types.CompletedPart, 0, 2)
-
-	// Copy existing object as first part
-	copySource := fmt.Sprintf("%s/%s", c.bucket, fullKey)
-	for attempt := 0; attempt <= c.retryAttempts; attempt++ {
-		resp, err := c.client.UploadPartCopy(ctx, &s3.UploadPartCopyInput{
-			Bucket:     aws.String(c.bucket),
-			Key:        aws.String(fullKey),
-			PartNumber: aws.Int32(1),
-			UploadId:   aws.String(uploadID),
-			CopySource: aws.String(copySource),
-		})
-		if err == nil {
-			completed = append(completed, types.CompletedPart{ETag: resp.CopyPartResult.ETag, PartNumber: aws.Int32(1)})
-			break
+	// When appending small data, use Close to upload the final part.
+	if len(data) < s3lib.MinPartSize {
+		if err := up.Close(data); err != nil {
+			up.Abort()
+			return ErrS3Operation{Operation: "close", Err: err}
 		}
-		if attempt == c.retryAttempts {
-			c.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{Bucket: aws.String(c.bucket), Key: aws.String(fullKey), UploadId: aws.String(uploadID)})
-			return ErrS3Operation{Operation: "upload part copy", Err: err}
-		}
+		return nil
 	}
 
-	// Upload new data as second part
-	for attempt := 0; attempt <= c.retryAttempts; attempt++ {
-		resp, err := c.client.UploadPart(ctx, &s3.UploadPartInput{
-			Bucket:     aws.String(c.bucket),
-			Key:        aws.String(fullKey),
-			PartNumber: aws.Int32(2),
-			UploadId:   aws.String(uploadID),
-			Body:       bytes.NewReader(data),
-		})
-		if err == nil {
-			completed = append(completed, types.CompletedPart{ETag: resp.ETag, PartNumber: aws.Int32(2)})
-			break
-		}
-		if attempt == c.retryAttempts {
-			c.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{Bucket: aws.String(c.bucket), Key: aws.String(fullKey), UploadId: aws.String(uploadID)})
-			return ErrS3Operation{Operation: "upload part", Err: err}
-		}
+	// For larger data use a normal part upload then finalize.
+	if err := up.Upload(2, data); err != nil {
+		up.Abort()
+		return ErrS3Operation{Operation: "upload", Err: err}
 	}
-
-	// Complete the multipart upload
-	_, err = c.client.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
-		Bucket:   aws.String(c.bucket),
-		Key:      aws.String(fullKey),
-		UploadId: aws.String(uploadID),
-		MultipartUpload: &types.CompletedMultipartUpload{
-			Parts: completed,
-		},
-	})
-	if err != nil {
-		c.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{Bucket: aws.String(c.bucket), Key: aws.String(fullKey), UploadId: aws.String(uploadID)})
-		return ErrS3Operation{Operation: "complete multipart upload", Err: err}
+	if err := up.Close(nil); err != nil {
+		up.Abort()
+		return ErrS3Operation{Operation: "close", Err: err}
 	}
-
 	return nil
 }
 
-// Download downloads data from S3 with retry logic.
+// Download downloads an object.
 func (c *S3Client) Download(ctx context.Context, key string) ([]byte, error) {
 	fullKey := c.buildKey(key)
-
-	for attempt := 0; attempt <= c.retryAttempts; attempt++ {
-		resp, err := c.client.GetObject(ctx, &s3.GetObjectInput{
-			Bucket: aws.String(c.bucket),
-			Key:    aws.String(fullKey),
-		})
-
-		if err == nil {
-			defer resp.Body.Close()
-			data, readErr := io.ReadAll(resp.Body)
-			if readErr != nil {
-				return nil, ErrS3Operation{Operation: "read response", Err: readErr}
-			}
-			return data, nil
-		}
-
-		if attempt == c.retryAttempts {
-			return nil, ErrS3Operation{Operation: "download", Err: err}
-		}
+	f, err := c.bucket.Open(fullKey)
+	if err != nil {
+		return nil, ErrS3Operation{Operation: "download", Err: err}
 	}
-
-	return nil, nil
+	defer f.Close()
+	return io.ReadAll(f)
 }
 
 // DownloadRange downloads a byte range from S3.
 func (c *S3Client) DownloadRange(ctx context.Context, key string, start, end int64) ([]byte, error) {
 	fullKey := c.buildKey(key)
-	rangeHeader := fmt.Sprintf("bytes=%d-%d", start, end)
-
-	for attempt := 0; attempt <= c.retryAttempts; attempt++ {
-		resp, err := c.client.GetObject(ctx, &s3.GetObjectInput{
-			Bucket: aws.String(c.bucket),
-			Key:    aws.String(fullKey),
-			Range:  aws.String(rangeHeader),
-		})
-
-		if err == nil {
-			defer resp.Body.Close()
-			data, readErr := io.ReadAll(resp.Body)
-			if readErr != nil {
-				return nil, ErrS3Operation{Operation: "read range response", Err: readErr}
-			}
-			return data, nil
-		}
-
-		if attempt == c.retryAttempts {
-			return nil, ErrS3Operation{Operation: "download range", Err: err}
-		}
+	reader, err := c.bucket.OpenRange(fullKey, "", start, end-start+1)
+	if err != nil {
+		return nil, ErrS3Operation{Operation: "range", Err: err}
 	}
-
-	return nil, nil
+	defer reader.Close()
+	return io.ReadAll(reader)
 }
 
-// ObjectExists checks if an object exists in S3.
+// ObjectExists checks if an object exists.
 func (c *S3Client) ObjectExists(ctx context.Context, key string) (bool, error) {
 	fullKey := c.buildKey(key)
-
-	_, err := c.client.HeadObject(ctx, &s3.HeadObjectInput{
-		Bucket: aws.String(c.bucket),
-		Key:    aws.String(fullKey),
-	})
-
+	_, err := c.bucket.Open(fullKey)
 	if err != nil {
-		// Check for NoSuchKey error (real AWS)
-		var nsk *types.NoSuchKey
-		if errors.As(err, &nsk) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return false, nil
 		}
-
-		// Check for HTTP 404 errors (mock server or other S3-compatible services)
-		errStr := err.Error()
-		if strings.Contains(errStr, "404") || strings.Contains(errStr, "NotFound") || strings.Contains(errStr, "NoSuchKey") {
-			return false, nil
-		}
-
-		return false, ErrS3Operation{Operation: "head object", Err: err}
+		return false, ErrS3Operation{Operation: "head", Err: err}
 	}
-
 	return true, nil
 }
 
-// ObjectSize returns the size of an object in S3.
+// ObjectSize returns the size of an object.
 func (c *S3Client) ObjectSize(ctx context.Context, key string) (int64, error) {
 	fullKey := c.buildKey(key)
-
-	resp, err := c.client.HeadObject(ctx, &s3.HeadObjectInput{
-		Bucket: aws.String(c.bucket),
-		Key:    aws.String(fullKey),
-	})
-
+	f, err := c.bucket.Open(fullKey)
 	if err != nil {
-		return 0, ErrS3Operation{Operation: "head object", Err: err}
+		return 0, ErrS3Operation{Operation: "head", Err: err}
 	}
-
-	return *resp.ContentLength, nil
+	defer f.Close()
+	if s3f, ok := f.(*s3lib.File); ok {
+		return s3f.Reader.Size, nil
+	}
+	return 0, ErrS3Operation{Operation: "head", Err: fmt.Errorf("not a file")}
 }
 
-// Upload overwrites an S3 object with the given data.
-func (c *S3Client) Upload(ctx context.Context, key string, data []byte) error {
-	fullKey := c.buildKey(key)
-
-	for attempt := 0; attempt <= c.retryAttempts; attempt++ {
-		_, err := c.client.PutObject(ctx, &s3.PutObjectInput{
-			Bucket: aws.String(c.bucket),
-			Key:    aws.String(fullKey),
-			Body:   bytes.NewReader(data),
-		})
-		if err == nil {
-			return nil // Success
-		}
-		if attempt == c.retryAttempts {
-			return ErrS3Operation{Operation: "overwrite object (put)", Err: err}
-		}
-		// Consider adding a small delay here for retries if appropriate for the application
-	}
-	return nil // Should be unreachable if retryAttempts >= 0
-}
-
-// IsNoSuchKey checks if the error is a NoSuchKey error.
+// IsNoSuchKey checks if the error is a missing object error.
 func IsNoSuchKey(err error) bool {
 	if err == nil {
 		return false
 	}
-
-	var nsk *types.NoSuchKey
-	switch {
-	case errors.As(err, &nsk):
+	if errors.Is(err, fs.ErrNotExist) {
 		return true
-	case strings.Contains(err.Error(), "NoSuchKey"):
-		return true
-	case strings.Contains(err.Error(), "404"):
-		return true
-	default:
-		return false
 	}
+	return strings.Contains(err.Error(), "NoSuchKey") || strings.Contains(err.Error(), "404")
 }

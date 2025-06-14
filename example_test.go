@@ -1,24 +1,28 @@
 package threads
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"time"
 
+	s3mock "github.com/kelindar/s3/mock"
 	"github.com/kelindar/threads/internal/s3"
 )
 
 // Example demonstrates basic usage of the threads library
 func Example() {
-	// Configure the logger
+	// Use a mock S3 server for the example
+	mockServer := s3mock.New("example-bucket", "us-east-1")
+	defer mockServer.Close()
+
 	config := Config{
-		S3Config: s3.Config{
-			Bucket: "my-game-logs",
-			Region: "us-east-1",
-			Prefix: "game-events",
-		},
+		S3Config:      s3.CreateConfigForMock(mockServer, "example-bucket", "events"),
 		ChunkInterval: 5 * time.Minute,
 		BufferSize:    1000,
+		NewS3Client: func(ctx context.Context, cfg s3.Config) (s3.Client, error) {
+			return s3.NewMockClient(ctx, mockServer, cfg)
+		},
 	}
 
 	// Create logger

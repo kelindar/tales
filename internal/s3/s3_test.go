@@ -1,20 +1,22 @@
 package s3
 
 import (
+	"bytes"
 	"context"
-	"testing"
-
 	"errors"
 	"fmt"
+	"io/fs"
+	"testing"
 
-	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	s3lib "github.com/kelindar/s3"
+	s3mock "github.com/kelindar/s3/mock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestS3ClientWithMock(t *testing.T) {
 	// Start mock S3 server
-	mockServer := NewMockS3Server()
+	mockServer := s3mock.New("test-bucket", "us-east-1")
 	defer mockServer.Close()
 
 	// Create S3 config for mock
@@ -34,7 +36,7 @@ func TestS3ClientWithMock(t *testing.T) {
 		assert.NoError(t, err)
 
 		// Verify it exists in mock server
-		storedData, exists := mockServer.GetObject("test-bucket/test-prefix/" + key)
+		storedData, exists := mockServer.ObjectContent("test-prefix/" + key)
 		assert.True(t, exists)
 		assert.Equal(t, data, storedData)
 
@@ -77,6 +79,28 @@ func TestS3ClientWithMock(t *testing.T) {
 		downloaded, err := client.Download(ctx, key)
 		assert.NoError(t, err)
 		assert.Equal(t, data, downloaded)
+	})
+
+	t.Run("AppendLargeObject", func(t *testing.T) {
+		ctx := context.Background()
+		key := "large-file.bin"
+		large := bytes.Repeat([]byte("A"), s3lib.MinPartSize+1024)
+
+		// Upload a large object first
+		err := client.Append(ctx, key, large)
+		require.NoError(t, err)
+
+		// Append a small chunk
+		small := bytes.Repeat([]byte("B"), 1024)
+		err = client.Append(ctx, key, small)
+		require.NoError(t, err)
+
+		// Verify size and content
+		combined, err := client.Download(ctx, key)
+		require.NoError(t, err)
+		require.Equal(t, len(large)+len(small), len(combined))
+		assert.Equal(t, large, combined[:len(large)])
+		assert.Equal(t, small, combined[len(large):])
 	})
 
 	t.Run("DownloadRange", func(t *testing.T) {
@@ -165,13 +189,13 @@ func TestS3ClientWithMock(t *testing.T) {
 		// Should be an S3 operation error
 		var s3Err ErrS3Operation
 		assert.ErrorAs(t, err, &s3Err)
-		assert.Equal(t, "head object", s3Err.Operation)
+		assert.Equal(t, "head", s3Err.Operation)
 	})
 }
 
 func TestS3ClientKeyPrefixing(t *testing.T) {
 	// Start mock S3 server
-	mockServer := NewMockS3Server()
+	mockServer := s3mock.New("test-bucket", "us-east-1")
 	defer mockServer.Close()
 
 	t.Run("WithPrefix", func(t *testing.T) {
@@ -189,7 +213,7 @@ func TestS3ClientKeyPrefixing(t *testing.T) {
 		assert.NoError(t, err)
 
 		// Verify it's stored with prefix
-		storedData, exists := mockServer.GetObject("test-bucket/my/prefix/" + key)
+		storedData, exists := mockServer.ObjectContent("my/prefix/" + key)
 		assert.True(t, exists)
 		assert.Equal(t, data, storedData)
 
@@ -214,19 +238,19 @@ func TestS3ClientKeyPrefixing(t *testing.T) {
 		assert.NoError(t, err)
 
 		// Verify it's stored without prefix
-		storedData, exists := mockServer.GetObject("test-bucket/" + key)
+		storedData, exists := mockServer.ObjectContent(key)
 		assert.True(t, exists)
 		assert.Equal(t, data, storedData)
 	})
 }
 
 func TestMockServerDirectly(t *testing.T) {
-	mockServer := NewMockS3Server()
+	mockServer := s3mock.New("test-bucket", "us-east-1")
 	defer mockServer.Close()
 
 	t.Run("ListObjects", func(t *testing.T) {
 		// Initially empty
-		objects := mockServer.ListObjects()
+		objects := mockServer.ListObjects("")
 		assert.Empty(t, objects)
 
 		// Create config and client
@@ -248,14 +272,14 @@ func TestMockServerDirectly(t *testing.T) {
 		}
 
 		// List objects
-		objects = mockServer.ListObjects()
+		objects = mockServer.ListObjects("")
 		assert.Len(t, objects, 3)
 
 		// Should be sorted
 		expectedKeys := []string{
-			"test-bucket/test/file1.txt",
-			"test-bucket/test/file2.txt",
-			"test-bucket/test/file3.txt",
+			"test/file1.txt",
+			"test/file2.txt",
+			"test/file3.txt",
 		}
 		assert.Equal(t, expectedKeys, objects)
 	})
@@ -274,23 +298,23 @@ func TestMockServerDirectly(t *testing.T) {
 		assert.NoError(t, err)
 
 		// Access directly via mock server
-		storedData, exists := mockServer.GetObject("test-bucket/direct/" + key)
+		storedData, exists := mockServer.ObjectContent("direct/" + key)
 		assert.True(t, exists)
 		assert.Equal(t, data, storedData)
 
 		// Try non-existent key
-		_, exists = mockServer.GetObject("non-existent-key")
+		_, exists = mockServer.ObjectContent("non-existent-key")
 		assert.False(t, exists)
 	})
 }
 
 func TestIsNoSuchKey(t *testing.T) {
-	t.Run("with *types.NoSuchKey", func(t *testing.T) {
-		assert.True(t, IsNoSuchKey(&types.NoSuchKey{}))
+	t.Run("with fs.ErrNotExist", func(t *testing.T) {
+		assert.True(t, IsNoSuchKey(fs.ErrNotExist))
 	})
 
-	t.Run("with wrapped *types.NoSuchKey", func(t *testing.T) {
-		err := fmt.Errorf("wrapped: %w", &types.NoSuchKey{})
+	t.Run("with wrapped fs.ErrNotExist", func(t *testing.T) {
+		err := fmt.Errorf("wrapped: %w", fs.ErrNotExist)
 		assert.True(t, IsNoSuchKey(err))
 	})
 
