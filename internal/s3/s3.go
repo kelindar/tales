@@ -14,11 +14,10 @@ import (
 
 // Config represents the S3-specific configuration.
 type Config struct {
-	Bucket      string // S3 bucket name (required)
-	Region      string // AWS region (required for mock)
-	Prefix      string // S3 key prefix (optional)
-	Concurrency int    // Unused but kept for compatibility
-	Retries     int    // Unused but kept for compatibility
+	Bucket  string // S3 bucket name (required)
+	Region  string // AWS region (required for mock)
+	Prefix  string // S3 key prefix (optional)
+	Retries int    // Unused but kept for compatibility
 }
 
 // Client interface abstracts S3 operations for easier testing and mocking

@@ -27,11 +27,6 @@ func WithPrefix(prefix string) Option {
 	return func(c *config) { c.S3Config.Prefix = prefix }
 }
 
-// WithConcurrency sets the (unused) concurrency parameter on the S3 config.
-func WithConcurrency(n int) Option {
-	return func(c *config) { c.S3Config.Concurrency = n }
-}
-
 // WithRetries sets the (unused) retries parameter on the S3 config.
 func WithRetries(n int) Option {
 	return func(c *config) { c.S3Config.Retries = n }
@@ -58,9 +53,6 @@ func (c *config) setDefaults() {
 	}
 	if c.BufferSize == 0 {
 		c.BufferSize = 1000
-	}
-	if c.S3Config.Concurrency == 0 {
-		c.S3Config.Concurrency = 10
 	}
 	if c.S3Config.Retries == 0 {
 		c.S3Config.Retries = 3
