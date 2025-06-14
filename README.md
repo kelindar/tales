@@ -182,8 +182,8 @@ type S3Config struct {
     Bucket          string
     Region          string
     Prefix          string
-    MaxConcurrent   int    // Max concurrent S3 requests (default: 10)
-    RetryAttempts   int    // Retry attempts for failed requests (default: 3)
+    Concurrency     int    // Unused, kept for compatibility
+    Retries         int    // Unused, kept for compatibility
     // AWS credentials via environment or IAM roles
 }
 ```
@@ -244,7 +244,7 @@ import (
     "github.com/RoaringBitmap/roaring/v2"  // Actor sequence ID indexing (roaring32)
     "github.com/klauspost/compress/zstd"   // Log chunk compression
     "github.com/stretchr/testify/assert"   // Unit testing
-    "github.com/aws/aws-sdk-go-v2"         // S3 integration
+    "github.com/kelindar/s3"              // Lightweight S3 client
 )
 ```
 

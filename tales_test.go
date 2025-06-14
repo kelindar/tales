@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	s3mock "github.com/kelindar/s3/mock"
 	"github.com/kelindar/threads/internal/s3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -93,7 +94,7 @@ func TestIntegration(t *testing.T) {
 
 func newService() (*Service, error) {
 	// Create a mock S3 server
-	mockS3 := s3.NewMockS3Server()
+	mockS3 := s3mock.New("test-bucket", "us-east-1")
 
 	// Create S3 config for mock server
 	s3Config := s3.CreateConfigForMock(mockS3, "test-bucket", "test-prefix")
