@@ -4,25 +4,20 @@ import (
 	"fmt"
 	"log"
 	"time"
-
-	"github.com/kelindar/threads/internal/s3"
 )
 
 // Example demonstrates basic usage of the threads library
 func Example() {
-	// Configure the logger
-	config := Config{
-		S3Config: s3.Config{
+	// Create logger
+	logger, err := New(
+		S3Config{
 			Bucket: "my-game-logs",
 			Region: "us-east-1",
 			Prefix: "game-events",
 		},
-		ChunkInterval: 5 * time.Minute,
-		BufferSize:    1000,
-	}
-
-	// Create logger
-	logger, err := New(config)
+		WithChunkInterval(5*time.Minute),
+		WithBufferSize(1000),
+	)
 	if err != nil {
 		log.Fatal(err)
 	}

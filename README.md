@@ -11,7 +11,7 @@ type Logger struct {
     // private implementation
 }
 
-func New(config Config) (*Logger, error)
+func New(cfg S3Config, opts ...Option) (*Logger, error)
 func (l *Logger) Log(text string, actors []uint32) error
 func (l *Logger) Query(actor uint32, from, to time.Time) iter.Seq2[time.Time, string]
 func (l *Logger) Close() error
@@ -188,6 +188,22 @@ type S3Config struct {
 }
 ```
 
+If `Bucket` or `Region` are omitted, they are resolved from the environment
+variables `S3_BUCKET`, `AWS_REGION`, or `AWS_DEFAULT_REGION`.
+
+The logger is created by providing the required S3 configuration and optional
+settings:
+
+```go
+logger, err := threads.New(
+    threads.S3Config{
+        Bucket: "game-logs-bucket",
+        Region: "us-west-2",
+    },
+    threads.WithChunkInterval(5*time.Minute),
+)
+```
+
 ## S3 Access Patterns
 
 ### Byte-Range Operations
@@ -252,14 +268,14 @@ import (
 
 ### Basic Setup and Logging
 ```go
-logger, err := threads.New(threads.Config{
-    S3Config: threads.S3Config{
+logger, err := threads.New(
+    threads.S3Config{
         Bucket: "game-logs-bucket",
         Region: "us-west-2",
         Prefix: "production/threads/",
     },
-    ChunkInterval: 5 * time.Minute,
-})
+    threads.WithChunkInterval(5 * time.Minute),
+)
 if err != nil {
     return err
 }

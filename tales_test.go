@@ -96,17 +96,21 @@ func newService() (*Service, error) {
 	mockS3 := s3.NewMockS3Server()
 
 	// Create S3 config for mock server
-	s3Config := s3.CreateConfigForMock(mockS3, "test-bucket", "test-prefix")
-
-	// Create logger config
-	config := Config{
-		ChunkInterval: 1 * time.Minute,
-		BufferSize:    1024 * 1024, // 1MB
-		S3Config:      s3Config,
-		NewS3Client: func(ctx context.Context, config s3.Config) (s3.Client, error) {
-			return s3.NewMockClient(ctx, mockS3, config)
-		},
+	internalCfg := s3.CreateConfigForMock(mockS3, "test-bucket", "test-prefix")
+	cfg := S3Config{
+		Bucket:      internalCfg.Bucket,
+		Region:      internalCfg.Region,
+		Prefix:      internalCfg.Prefix,
+		Concurrency: internalCfg.Concurrency,
+		Retries:     internalCfg.Retries,
 	}
 
-	return New(config)
+	return New(
+		cfg,
+		WithChunkInterval(1*time.Minute),
+		WithBufferSize(1024*1024),
+		WithS3Client(func(ctx context.Context, config S3Config) (s3.Client, error) {
+			return s3.NewMockClient(ctx, mockS3, config.toInternal())
+		}),
+	)
 }

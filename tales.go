@@ -45,8 +45,14 @@ type Service struct {
 	closed   int32 // atomic flag
 }
 
-// New creates a new Logger instance with the given configuration.
-func New(config Config) (*Service, error) {
+// New creates a new logger instance configured with the provided S3 settings
+// and optional parameters.
+func New(cfg S3Config, opts ...Option) (*Service, error) {
+	config := Config{S3Config: cfg}
+	for _, opt := range opts {
+		opt(&config)
+	}
+
 	// Set defaults and validate configuration
 	config.setDefaults()
 	if err := config.validate(); err != nil {
@@ -61,10 +67,11 @@ func New(config Config) (*Service, error) {
 
 	// Create S3 client
 	var s3Client s3.Client
+	internalCfg := config.S3Config.toInternal()
 	if config.NewS3Client != nil {
 		s3Client, err = config.NewS3Client(context.Background(), config.S3Config)
 	} else {
-		s3Client, err = s3.NewClient(context.Background(), config.S3Config)
+		s3Client, err = s3.NewClient(context.Background(), internalCfg)
 	}
 	if err != nil {
 		codecInstance.Close()
