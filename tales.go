@@ -67,8 +67,8 @@ func New(bucket, region string, opts ...Option) (*Service, error) {
 
 	// Create S3 client
 	var s3Client s3.Client
-	if cfg.NewS3Client != nil {
-		s3Client, err = cfg.NewS3Client(context.Background(), cfg.S3Config)
+	if cfg.NewClient != nil {
+		s3Client, err = cfg.NewClient(context.Background(), cfg.S3Config)
 	} else {
 		s3Client, err = s3.NewClient(context.Background(), cfg.S3Config)
 	}

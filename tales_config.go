@@ -27,19 +27,19 @@ func WithPrefix(prefix string) Option {
 	return func(c *config) { c.S3Config.Prefix = prefix }
 }
 
-// WithS3Concurrency sets the (unused) concurrency parameter on the S3 config.
-func WithS3Concurrency(n int) Option {
+// WithConcurrency sets the (unused) concurrency parameter on the S3 config.
+func WithConcurrency(n int) Option {
 	return func(c *config) { c.S3Config.Concurrency = n }
 }
 
-// WithS3Retries sets the (unused) retries parameter on the S3 config.
-func WithS3Retries(n int) Option {
+// WithRetries sets the (unused) retries parameter on the S3 config.
+func WithRetries(n int) Option {
 	return func(c *config) { c.S3Config.Retries = n }
 }
 
-// WithS3Client allows overriding the S3 client creation function.
-func WithS3Client(fn func(context.Context, s3.Config) (s3.Client, error)) Option {
-	return func(c *config) { c.NewS3Client = fn }
+// WithClient allows overriding the S3 client creation function.
+func WithClient(fn func(context.Context, s3.Config) (s3.Client, error)) Option {
+	return func(c *config) { c.NewClient = fn }
 }
 
 // config holds all configuration for the logger. It is kept private and
@@ -48,7 +48,7 @@ type config struct {
 	S3Config      s3.Config
 	ChunkInterval time.Duration
 	BufferSize    int
-	NewS3Client   func(context.Context, s3.Config) (s3.Client, error)
+	NewClient     func(context.Context, s3.Config) (s3.Client, error)
 }
 
 // setDefaults applies default values to the configuration.
