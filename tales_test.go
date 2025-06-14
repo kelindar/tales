@@ -92,6 +92,14 @@ func TestIntegration(t *testing.T) {
 	assert.Empty(t, results4)
 }
 
+func TestBuildDailyKeys(t *testing.T) {
+	tlog, tidx, alog, aidx := buildDailyKeys("2023-01-02")
+	assert.Equal(t, "2023-01-02/threads.log", tlog)
+	assert.Equal(t, "2023-01-02/threads.idx", tidx)
+	assert.Equal(t, "2023-01-02/actors.log", alog)
+	assert.Equal(t, "2023-01-02/actors.idx", aidx)
+}
+
 func newService() (*Service, error) {
 	// Create a mock S3 server
 	mockS3 := s3mock.New("test-bucket", "us-east-1")
