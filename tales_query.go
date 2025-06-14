@@ -1,4 +1,4 @@
-package threads
+package tales
 
 import (
 	"context"
@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/RoaringBitmap/roaring/v2"
-	"github.com/kelindar/threads/internal/codec"
-	"github.com/kelindar/threads/internal/seq"
+	"github.com/kelindar/tales/internal/codec"
+	"github.com/kelindar/tales/internal/seq"
 )
 
 // queryMemory queries the in-memory buffer for entries.

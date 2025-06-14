@@ -1,11 +1,11 @@
-package threads
+package tales
 
 import (
 	"context"
 	"fmt"
 	"time"
 
-	"github.com/kelindar/threads/internal/s3"
+	"github.com/kelindar/tales/internal/s3"
 )
 
 // Option configures the Service. All options are optional and may be provided

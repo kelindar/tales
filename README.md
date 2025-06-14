@@ -1,8 +1,8 @@
-# Threads Library Design Document
+# Tales Library Design Document
 
 ## Overview
 
-The threads library provides high-performance, memory-efficient logging and querying of game events with actor-centric access patterns. It's designed for logging speech and other game events with the ability to query historical data for specific actors.
+The Tales library provides high-performance, memory-efficient logging and querying of game events with actor-centric access patterns. It's designed for logging speech and other game events with the ability to query historical data for specific actors.
 
 ## Core API
 
@@ -318,5 +318,5 @@ for timestamp, text := range logger.Query(12345, from, to) {
 ## Installation
 
 ```bash
-go get github.com/kelindar/threads
+go get github.com/kelindar/tales
 ```
