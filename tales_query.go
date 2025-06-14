@@ -43,7 +43,7 @@ func (l *Service) queryDay(ctx context.Context, actor uint32, day time.Time, fro
 	date := seq.FormatDate(day)
 
 	// Build S3 keys
-	tlog, tidx, alog, aidx := buildDailyKeys(date)
+	_, tidx, alog, aidx := buildDailyKeys(date)
 
 	// 1. Download and parse index file
 	entries, err := l.loadIndexFile(ctx, aidx)
@@ -74,7 +74,7 @@ func (l *Service) queryDay(ctx context.Context, actor uint32, day time.Time, fro
 	}
 
 	// 5. Group sequence IDs by log chunks and query
-	return l.queryChunks(ctx, tlog, meta, bm, day, from, to, yield)
+	return l.queryChunks(ctx, date, meta, bm, day, from, to, yield)
 }
 
 // loadIndexFile downloads and parses the index file.
@@ -149,10 +149,12 @@ func (l *Service) mergeBitmaps(ctx context.Context, key string, entries []codec.
 	return bm, nil
 }
 
-// queryChunks queries log chunks for specific sequence IDs.
-func (l *Service) queryChunks(ctx context.Context, logKey string, meta *codec.Metadata, bm *roaring.Bitmap, day, from, to time.Time, yield func(time.Time, string) bool) bool {
+// queryChunks queries log chunks for specific sequence IDs. Each chunk is stored
+// as a separate file; the metadata offset field denotes the chunk number.
+func (l *Service) queryChunks(ctx context.Context, date string, meta *codec.Metadata, bm *roaring.Bitmap, day, from, to time.Time, yield func(time.Time, string) bool) bool {
 	for _, chunk := range meta.Chunks {
-		if !l.queryChunk(ctx, logKey, chunk, bm, day, from, to, yield) {
+		chunkKey := buildChunkKey(date, chunk.Offset())
+		if !l.queryChunk(ctx, chunkKey, chunk, bm, day, from, to, yield) {
 			return false // Yield returned false, stop.
 		}
 	}
@@ -161,8 +163,8 @@ func (l *Service) queryChunks(ctx context.Context, logKey string, meta *codec.Me
 }
 
 // queryChunk queries a specific log chunk for sequence IDs.
-func (l *Service) queryChunk(ctx context.Context, logKey string, chunk codec.ChunkEntry, sids *roaring.Bitmap, day, from, to time.Time, yield func(time.Time, string) bool) bool {
-	entries, err := l.rangeChunks(ctx, logKey, chunk)
+func (l *Service) queryChunk(ctx context.Context, chunkKey string, chunk codec.ChunkEntry, sids *roaring.Bitmap, day, from, to time.Time, yield func(time.Time, string) bool) bool {
+	entries, err := l.rangeChunks(ctx, chunkKey, chunk)
 	if err != nil {
 		return true // Skip chunks that fail to process
 	}
@@ -183,10 +185,9 @@ func (l *Service) queryChunk(ctx context.Context, logKey string, chunk codec.Chu
 	return true
 }
 
-// rangeChunks downloads, decompresses, and returns an iterator over log entries.
-func (l *Service) rangeChunks(ctx context.Context, logKey string, chunk codec.ChunkEntry) (iter.Seq[codec.LogEntry], error) {
-	end := int64(chunk.Offset() + uint64(chunk.CompressedSize()) - 1)
-	compressed, err := l.s3Client.DownloadRange(ctx, logKey, int64(chunk.Offset()), end)
+// rangeChunks downloads a full chunk file, decompresses it, and returns an iterator over log entries.
+func (l *Service) rangeChunks(ctx context.Context, chunkKey string, chunk codec.ChunkEntry) (iter.Seq[codec.LogEntry], error) {
+	compressed, err := l.s3Client.Download(ctx, chunkKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download log chunk: %w", err)
 	}

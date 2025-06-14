@@ -32,7 +32,7 @@ func (l *Service) flushBuffer(ctx context.Context, buf *buffer.Buffer) error {
 	date := seq.FormatDate(now)
 	flushTimeMinutes := uint32(now.Sub(day).Minutes())
 
-	tlog, tidx, alog, aidx := buildDailyKeys(date)
+	_, tidx, alog, aidx := buildDailyKeys(date)
 
 	// 1. Read existing metadata file.
 	var meta *codec.Metadata
@@ -49,13 +49,15 @@ func (l *Service) flushBuffer(ctx context.Context, buf *buffer.Buffer) error {
 		}
 	}
 
-	// 2. Append new log data to the log file.
-	if err := l.s3Client.Append(ctx, tlog, res.Data.CompressedData); err != nil {
-		return fmt.Errorf("failed to append to log file: %w", err)
+	// 2. Upload new log chunk as a separate file.
+	chunkNumber := uint64(meta.ChunkCount)
+	chunkKey := buildChunkKey(date, chunkNumber)
+	if err := l.s3Client.Upload(ctx, chunkKey, res.Data.CompressedData); err != nil {
+		return fmt.Errorf("failed to upload log chunk: %w", err)
 	}
 
-	// 3. Update metadata with new chunk info.
-	chunkOffset := uint64(meta.TotalDataSize)
+	// 3. Update metadata with new chunk info (offset stores chunk number).
+	chunkOffset := chunkNumber
 
 	// 4. Handle bitmaps and index entries.
 	bitmapChunkOffset := meta.TotalBitmapSize

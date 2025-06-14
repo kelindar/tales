@@ -10,3 +10,8 @@ func buildDailyKeys(date string) (threadsLog, threadsIdx, actorsLog, actorsIdx s
 	actorsIdx = fmt.Sprintf("%s/actors.idx", date)
 	return
 }
+
+// buildChunkKey builds an S3 key for a specific chunk file inside the date folder.
+func buildChunkKey(date string, chunk uint64) string {
+	return fmt.Sprintf("%s/%d.log", date, chunk)
+}
