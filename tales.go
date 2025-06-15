@@ -132,8 +132,8 @@ func (l *Service) Query(from, to time.Time, actors ...uint32) iter.Seq2[time.Tim
 
 		// Query both memory and history.
 		// Query history first, then memory, to ensure chronological order (past to now).
-		l.queryHistory(context.Background(), actors, from, to, yield)
-		l.queryMemory(actors, from, to, yield)
+		l.queryCold(context.Background(), actors, from, to, yield)
+		l.queryWarm(actors, from, to, yield)
 	}
 }
 

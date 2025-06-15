@@ -12,8 +12,8 @@ import (
 	"github.com/kelindar/tales/internal/seq"
 )
 
-// queryMemory queries the in-memory buffer for entries.
-func (l *Service) queryMemory(actors []uint32, from, to time.Time, yield func(time.Time, string) bool) {
+// queryWarm queries the in-memory buffer for entries.
+func (l *Service) queryWarm(actors []uint32, from, to time.Time, yield func(time.Time, string) bool) {
 	ret := make(chan iter.Seq[codec.LogEntry], 1)
 	l.commands <- command{query: &queryCmd{actors: actors, from: from, to: to, ret: ret}}
 
@@ -25,17 +25,14 @@ func (l *Service) queryMemory(actors []uint32, from, to time.Time, yield func(ti
 	}
 }
 
-// queryHistory implements the S3 historical query logic.
-func (l *Service) queryHistory(ctx context.Context, actors []uint32, from, to time.Time, yield func(time.Time, string) bool) {
-	// Query each day in the time range
-	current := seq.DayOf(from)
-	end := seq.DayOf(to).Add(24 * time.Hour)
-
-	for current.Before(end) {
-		if !l.queryDay(ctx, actors, current, from, to, yield) {
+// queryCold implements the S3 historical query logic.
+func (l *Service) queryCold(ctx context.Context, actors []uint32, from, to time.Time, yield func(time.Time, string) bool) {
+	t0 := seq.DayOf(from)
+	t1 := seq.DayOf(to).Add(24 * time.Hour)
+	for ; t0.Before(t1); t0 = t0.Add(24 * time.Hour) {
+		if !l.queryDay(ctx, actors, t0, from, to, yield) {
 			return // yield returned false, stop iteration
 		}
-		current = current.Add(24 * time.Hour)
 	}
 }
 
