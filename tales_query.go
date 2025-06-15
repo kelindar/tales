@@ -151,21 +151,7 @@ func (l *Service) mergeBitmaps(ctx context.Context, key string, entries []codec.
 		}
 		bm.Or(bitmap)
 	}
-
 	return bm, nil
-}
-
-// queryChunks queries log chunks for specific sequence IDs. Each chunk is stored
-// as a separate file; the metadata offset field denotes the chunk number.
-func (l *Service) queryChunks(ctx context.Context, date string, meta *codec.Metadata, bm *roaring.Bitmap, day, from, to time.Time, yield func(time.Time, string) bool) bool {
-	for _, chunk := range meta.Chunks {
-		chunkKey := buildChunkKey(date, chunk.Offset())
-		if !l.queryChunk(ctx, chunkKey, chunk, bm, day, from, to, yield) {
-			return false // Yield returned false, stop.
-		}
-	}
-
-	return true
 }
 
 // queryChunk queries a specific log chunk for sequence IDs.
