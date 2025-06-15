@@ -75,12 +75,10 @@ func (l *Service) flushBuffer(ctx context.Context, buf *buffer.Buffer) error {
 		return fmt.Errorf("failed to upload merged chunk: %w", err)
 	}
 
-	// 3. Update metadata with section sizes
-	chunkOffset := chunkNumber
-	meta.Update(chunkOffset, indexSize, bitmapSize, logSize)
-
-	// 4. Encode the metadata as JSON and upload it, overwriting the old one.
-	encodedMeta, err := codec.EncodeMetadata(meta)
+	// 3. Encode the metadata as JSON and upload it, overwriting the old one.
+	encodedMeta, err := codec.EncodeMetadata(
+		meta.Append(chunkNumber, indexSize, bitmapSize, logSize),
+	)
 	if err != nil {
 		return fmt.Errorf("failed to encode metadata: %w", err)
 	}

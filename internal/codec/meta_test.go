@@ -22,7 +22,7 @@ func TestMetadata(t *testing.T) {
 		meta := NewMetadata(time.Now())
 
 		// Add first chunk
-		meta.Update(0, 100, 200, 300)
+		meta.Append(0, 100, 200, 300)
 		assert.Equal(t, uint32(1), meta.ChunkCount)
 		assert.Len(t, meta.Chunks, 1)
 
@@ -34,7 +34,7 @@ func TestMetadata(t *testing.T) {
 		assert.Equal(t, uint32(300), chunk.LogSize())
 
 		// Add second chunk
-		meta.Update(1, 150, 250, 350)
+		meta.Append(1, 150, 250, 350)
 		assert.Equal(t, uint32(2), meta.ChunkCount)
 		assert.Len(t, meta.Chunks, 2)
 	})
@@ -43,8 +43,8 @@ func TestMetadata(t *testing.T) {
 		// Create metadata with some data
 		dayStart := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 		original := NewMetadata(dayStart)
-		original.Update(0, 100, 200, 300)
-		original.Update(1, 150, 250, 350)
+		original.Append(0, 100, 200, 300)
+		original.Append(1, 150, 250, 350)
 
 		// Encode to JSON
 		encoded, err := EncodeMetadata(original)
