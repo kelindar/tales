@@ -33,9 +33,9 @@ func DecodeMetadata(data []byte) (*Metadata, error) {
 	return &meta, nil
 }
 
-// Update adds a new chunk and updates bitmap size.
-func (m *Metadata) Update(offset uint64, compressedSize, uncompressedSize uint32) {
-	newChunk := NewChunkEntry(offset, compressedSize, uncompressedSize)
+// Update adds a new chunk with section sizes.
+func (m *Metadata) Update(offset uint64, indexSize, bitmapSize, logSize uint32) {
+	newChunk := NewChunkEntry(offset, indexSize, bitmapSize, logSize)
 	m.Chunks = append(m.Chunks, newChunk)
 	m.ChunkCount = uint32(len(m.Chunks))
 }

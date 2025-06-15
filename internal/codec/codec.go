@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	ChunkEntrySize = 16 // 8 bytes offset + 4 bytes compressed size + 4 bytes uncompressed size
+	ChunkEntrySize = 20 // 8 bytes offset + 4 bytes index size + 4 bytes bitmap size + 4 bytes log size
 	IndexEntrySize = 24 // 4 bytes timestamp + 4 bytes actor_id + 8 bytes offset + 4 bytes compressed size + 4 bytes uncompressed size
 )
 
@@ -180,11 +180,12 @@ func (e IndexEntry) UncompressedSize() uint32 {
 }
 
 // NewChunkEntry creates a new chunk entry
-func NewChunkEntry(offset uint64, compressedSize, uncompressedSize uint32) ChunkEntry {
+func NewChunkEntry(offset uint64, indexSize, bitmapSize, logSize uint32) ChunkEntry {
 	buf := make([]byte, ChunkEntrySize)
 	binary.LittleEndian.PutUint64(buf[0:8], offset)
-	binary.LittleEndian.PutUint32(buf[8:12], compressedSize)
-	binary.LittleEndian.PutUint32(buf[12:16], uncompressedSize)
+	binary.LittleEndian.PutUint32(buf[8:12], indexSize)
+	binary.LittleEndian.PutUint32(buf[12:16], bitmapSize)
+	binary.LittleEndian.PutUint32(buf[16:20], logSize)
 	return ChunkEntry(buf)
 }
 
@@ -196,18 +197,41 @@ func (e ChunkEntry) Offset() uint64 {
 	return binary.LittleEndian.Uint64(e[0:8])
 }
 
-// CompressedSize extracts the compressed size from a chunk entry
-func (e ChunkEntry) CompressedSize() uint32 {
+// IndexSize extracts the index section size from a chunk entry
+func (e ChunkEntry) IndexSize() uint32 {
 	if len(e) < 12 {
 		return 0
 	}
 	return binary.LittleEndian.Uint32(e[8:12])
 }
 
-// UncompressedSize extracts the uncompressed size from a chunk entry
-func (e ChunkEntry) UncompressedSize() uint32 {
+// BitmapSize extracts the bitmap section size from a chunk entry
+func (e ChunkEntry) BitmapSize() uint32 {
 	if len(e) < 16 {
 		return 0
 	}
 	return binary.LittleEndian.Uint32(e[12:16])
+}
+
+// LogSize extracts the log section size from a chunk entry
+func (e ChunkEntry) LogSize() uint32 {
+	if len(e) < 20 {
+		return 0
+	}
+	return binary.LittleEndian.Uint32(e[16:20])
+}
+
+// BitmapOffset calculates the offset to the bitmap section within the merged file
+func (e ChunkEntry) BitmapOffset() uint32 {
+	return e.IndexSize()
+}
+
+// LogOffset calculates the offset to the log section within the merged file
+func (e ChunkEntry) LogOffset() uint32 {
+	return e.IndexSize() + e.BitmapSize()
+}
+
+// TotalSize calculates the total size of the merged file
+func (e ChunkEntry) TotalSize() uint32 {
+	return e.IndexSize() + e.BitmapSize() + e.LogSize()
 }

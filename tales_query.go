@@ -56,25 +56,28 @@ func (l *Service) queryDay(ctx context.Context, actor uint32, day time.Time, fro
 		return true
 	}
 
-	// For each chunk, load its index and bitmap files
+	// For each chunk, load its sections from the merged file
 	for _, chunk := range meta.Chunks {
-		indexKey := buildIndexKey(date, chunk.Offset())
-		entries, err := l.loadIndexFile(ctx, indexKey)
+		chunkKey := buildChunkKey(date, chunk.Offset())
+
+		// Load index section
+		entries, err := l.loadIndex(ctx, chunkKey, chunk)
 		if err != nil {
 			continue
 		}
+
 		entries = l.filterEntries(entries, actor, day, from, to)
 		if len(entries) == 0 {
 			continue
 		}
 
-		bitmapKey := buildBitmapKey(date, chunk.Offset())
-		bm, err := l.mergeBitmaps(ctx, bitmapKey, entries)
+		// Load and merge bitmaps
+		bm, err := l.mergeBitmaps(ctx, chunkKey, chunk, entries)
 		if err != nil || bm.IsEmpty() {
 			continue
 		}
 
-		chunkKey := buildChunkKey(date, chunk.Offset())
+		// Query log section
 		if !l.queryChunk(ctx, chunkKey, chunk, bm, day, from, to, yield) {
 			return false
 		}
@@ -83,15 +86,21 @@ func (l *Service) queryDay(ctx context.Context, actor uint32, day time.Time, fro
 	return true
 }
 
-// loadIndexFile downloads and parses the index file.
-func (l *Service) loadIndexFile(ctx context.Context, key string) ([]codec.IndexEntry, error) {
-	data, err := l.s3Client.Download(ctx, key)
+// loadIndex downloads and parses the index section from a chunk file.
+func (l *Service) loadIndex(ctx context.Context, key string, chunk codec.ChunkEntry) ([]codec.IndexEntry, error) {
+	indexSize := chunk.IndexSize()
+	if indexSize == 0 {
+		return nil, nil
+	}
+
+	// Download only the index section (from offset 0 to indexSize-1)
+	data, err := l.s3Client.DownloadRange(ctx, key, 0, int64(indexSize-1))
 	if err != nil {
 		return nil, err
 	}
 
 	if len(data)%codec.IndexEntrySize != 0 {
-		return nil, fmt.Errorf("invalid index file size")
+		return nil, fmt.Errorf("invalid index section size")
 	}
 
 	count := len(data) / codec.IndexEntrySize
@@ -120,9 +129,13 @@ func (l *Service) filterEntries(entries []codec.IndexEntry, actor uint32, day, f
 }
 
 // loadBitmap downloads and decodes a single bitmap for a given index entry.
-func (l *Service) loadBitmap(ctx context.Context, key string, entry codec.IndexEntry) (*roaring.Bitmap, error) {
-	end := int64(entry.Offset() + uint64(entry.CompressedSize()) - 1)
-	compressed, err := l.s3Client.DownloadRange(ctx, key, int64(entry.Offset()), end)
+func (l *Service) loadBitmap(ctx context.Context, key string, chunk codec.ChunkEntry, entry codec.IndexEntry) (*roaring.Bitmap, error) {
+	// Calculate absolute offset within the merged file (bitmap section starts after index section)
+	bitmapSectionStart := int64(chunk.BitmapOffset())
+	absoluteStart := bitmapSectionStart + int64(entry.Offset())
+	absoluteEnd := absoluteStart + int64(entry.CompressedSize()) - 1
+
+	compressed, err := l.s3Client.DownloadRange(ctx, key, absoluteStart, absoluteEnd)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download bitmap chunk: %w", err)
 	}
@@ -142,10 +155,10 @@ func (l *Service) loadBitmap(ctx context.Context, key string, entry codec.IndexE
 }
 
 // mergeBitmaps downloads bitmap chunks and merges them.
-func (l *Service) mergeBitmaps(ctx context.Context, key string, entries []codec.IndexEntry) (*roaring.Bitmap, error) {
+func (l *Service) mergeBitmaps(ctx context.Context, key string, chunk codec.ChunkEntry, entries []codec.IndexEntry) (*roaring.Bitmap, error) {
 	bm := roaring.New()
 	for _, e := range entries {
-		bitmap, err := l.loadBitmap(ctx, key, e)
+		bitmap, err := l.loadBitmap(ctx, key, chunk, e)
 		if err != nil {
 			continue // Skip entries that fail to process
 		}
@@ -177,17 +190,25 @@ func (l *Service) queryChunk(ctx context.Context, chunkKey string, chunk codec.C
 	return true
 }
 
-// rangeChunks downloads a full chunk file, decompresses it, and returns an iterator over log entries.
+// rangeChunks downloads the log section from a chunk file, decompresses it, and returns an iterator over log entries.
 func (l *Service) rangeChunks(ctx context.Context, chunkKey string, chunk codec.ChunkEntry) (iter.Seq[codec.LogEntry], error) {
-	compressed, err := l.s3Client.Download(ctx, chunkKey)
+	// Calculate log section offset and download only that section
+	logOffset := int64(chunk.LogOffset())
+	logSize := chunk.LogSize()
+	if logSize == 0 {
+		return func(yield func(codec.LogEntry) bool) {}, nil // Empty iterator
+	}
+
+	logEnd := logOffset + int64(logSize) - 1
+	compressed, err := l.s3Client.DownloadRange(ctx, chunkKey, logOffset, logEnd)
 	if err != nil {
-		return nil, fmt.Errorf("failed to download log chunk: %w", err)
+		return nil, fmt.Errorf("failed to download log section: %w", err)
 	}
 
 	// Decompress chunk and parse log entries
 	buffer, err := l.codec.Decompress(compressed)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decompress log chunk: %w", err)
+		return nil, fmt.Errorf("failed to decompress log section: %w", err)
 	}
 
 	return func(yield func(codec.LogEntry) bool) {

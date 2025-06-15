@@ -94,13 +94,11 @@ func TestIntegration(t *testing.T) {
 func TestBuildKeys(t *testing.T) {
 	// Test metadata key
 	metadataKey := buildMetadataKey("2023-01-02")
-	assert.Equal(t, "2023-01-02/threads.idx", metadataKey)
+	assert.Equal(t, "2023-01-02/metadata.json", metadataKey)
 
-	// Test chunk-specific keys
+	// Test chunk key
 	chunk := uint64(5)
 	assert.Equal(t, "2023-01-02/5.log", buildChunkKey("2023-01-02", chunk))
-	assert.Equal(t, "2023-01-02/5.rbm", buildBitmapKey("2023-01-02", chunk))
-	assert.Equal(t, "2023-01-02/5.idx", buildIndexKey("2023-01-02", chunk))
 }
 
 func newService() (*Service, error) {

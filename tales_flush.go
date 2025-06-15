@@ -48,19 +48,13 @@ func (l *Service) flushBuffer(ctx context.Context, buf *buffer.Buffer) error {
 		}
 	}
 
-	// 2. Upload new log chunk as a separate file.
+	// 2. Create merged file with index + bitmap + log sections
 	chunkNumber := uint64(meta.ChunkCount)
 	chunkKey := buildChunkKey(date, chunkNumber)
-	if err := l.s3Client.Upload(ctx, chunkKey, res.Data.CompressedData); err != nil {
-		return fmt.Errorf("failed to upload log chunk: %w", err)
-	}
 
-	// 3. Update metadata with new chunk info (offset stores chunk number).
-	chunkOffset := chunkNumber
-
-	// 4. Handle bitmaps and index entries as separate files for this chunk.
-	var bitmapData []byte
+	// Build index section
 	var indexData []byte
+	var bitmapData []byte
 	var bitmapOffset uint32
 	for _, rbm := range res.Index {
 		indexEntry := codec.NewIndexEntry(flushTimeMinutes, rbm.ActorID, uint64(bitmapOffset), rbm.CompressedSize, rbm.UncompressedSize)
@@ -69,18 +63,22 @@ func (l *Service) flushBuffer(ctx context.Context, buf *buffer.Buffer) error {
 		bitmapOffset += rbm.CompressedSize
 	}
 
-	if len(bitmapData) > 0 {
-		if err := l.s3Client.Upload(ctx, buildBitmapKey(date, chunkNumber), bitmapData); err != nil {
-			return err
-		}
-		if err := l.s3Client.Upload(ctx, buildIndexKey(date, chunkNumber), indexData); err != nil {
-			return err
-		}
+	// Create merged file: [index section] + [bitmap section] + [log section]
+	mergedData := make([]byte, 0, len(indexData)+len(bitmapData)+len(res.Data.CompressedData))
+	mergedData = append(mergedData, indexData...)
+	mergedData = append(mergedData, bitmapData...)
+	mergedData = append(mergedData, res.Data.CompressedData...)
+
+	// Upload merged file
+	if err := l.s3Client.Upload(ctx, chunkKey, mergedData); err != nil {
+		return fmt.Errorf("failed to upload merged chunk: %w", err)
 	}
 
-	meta.Update(chunkOffset, res.Data.CompressedSize, res.Data.UncompressedSize)
+	// 3. Update metadata with section sizes
+	chunkOffset := chunkNumber
+	meta.Update(chunkOffset, uint32(len(indexData)), uint32(len(bitmapData)), res.Data.CompressedSize)
 
-	// 5. Encode the metadata as JSON and upload it, overwriting the old one.
+	// 4. Encode the metadata as JSON and upload it, overwriting the old one.
 	encodedMeta, err := codec.EncodeMetadata(meta)
 	if err != nil {
 		return fmt.Errorf("failed to encode metadata: %w", err)

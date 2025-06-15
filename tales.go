@@ -215,20 +215,10 @@ func (l *Service) flush() {
 
 // buildMetadataKey builds the S3 object key for the metadata file for the provided date (YYYY-MM-DD).
 func buildMetadataKey(date string) string {
-	return fmt.Sprintf("%s/threads.idx", date)
+	return fmt.Sprintf("%s/metadata.json", date)
 }
 
 // buildChunkKey builds an S3 key for a specific chunk file inside the date folder.
 func buildChunkKey(date string, chunk uint64) string {
 	return fmt.Sprintf("%s/%d.log", date, chunk)
-}
-
-// buildBitmapKey builds S3 key for bitmap data of a specific chunk.
-func buildBitmapKey(date string, chunk uint64) string {
-	return fmt.Sprintf("%s/%d.rbm", date, chunk)
-}
-
-// buildIndexKey builds S3 key for index data of a specific chunk.
-func buildIndexKey(date string, chunk uint64) string {
-	return fmt.Sprintf("%s/%d.idx", date, chunk)
 }
