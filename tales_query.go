@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"slices"
 	"time"
 
 	"github.com/RoaringBitmap/roaring/v2"
@@ -60,7 +61,7 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 		return true
 	}
 
-	// For each chunk, compute intersection of bitmaps for all actors
+	// For each chunk, load all relevant bitmaps and compute intersection
 	for _, chunk := range meta.Chunks {
 		if chunk.IndexSize() == 0 {
 			continue // Skip empty chunks
@@ -68,41 +69,42 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 
 		chunkKey := keyOfChunk(date, chunk.Offset())
 
-		// Load bitmaps for each actor and compute intersection
-		intersectionBitmap := roaring.New()
-		for i, actor := range actors {
-			// Load index entries for this actor
-			entries, err := l.loadIndex(ctx, chunkKey, chunk, func(entry codec.IndexEntry) bool {
-				return filterEntry(entry, actor, day, from, to)
-			})
-			if err != nil {
-				continue
-			}
-
-			// Load and merge bitmaps for this actor
-			actorBitmap, err := l.mergeBitmaps(ctx, chunkKey, chunk, entries)
-			if err != nil || actorBitmap.IsEmpty() {
-				// If any actor has no entries, intersection is empty
-				intersectionBitmap.Clear()
-				break
-			}
-
-			if i == 0 {
-				// First actor: initialize intersection
-				intersectionBitmap.Or(actorBitmap)
-			} else {
-				// Subsequent actors: compute intersection
-				intersectionBitmap.And(actorBitmap)
-				if intersectionBitmap.IsEmpty() {
-					// Early exit if intersection becomes empty
-					break
+		// Load all index entries for all actors in one pass
+		allEntries, err := l.loadIndex(ctx, chunkKey, chunk, func(entry codec.IndexEntry) bool {
+			// Check if this entry matches any of our actors and time range
+			for _, actor := range actors {
+				if filterEntry(entry, actor, day, from, to) {
+					return true
 				}
+			}
+			return false
+		})
+		if err != nil {
+			continue
+		}
+
+		// Process each entry once, building intersection directly
+		var index *roaring.Bitmap
+		for entry := range allEntries {
+			if !slices.Contains(actors, entry.Actor()) {
+				continue // Skip entries that don't match any actor
+			}
+
+			// Load this specific bitmap
+			bitmap, err := l.loadBitmap(ctx, chunkKey, chunk, entry)
+			switch {
+			case err != nil:
+				continue
+			case index == nil:
+				index = bitmap.Clone()
+			default:
+				index.And(bitmap)
 			}
 		}
 
 		// Query log section with intersection bitmap
-		if !intersectionBitmap.IsEmpty() {
-			if !l.queryChunk(ctx, chunkKey, chunk, intersectionBitmap, day, from, to, yield) {
+		if index != nil && !index.IsEmpty() {
+			if !l.queryChunk(ctx, chunkKey, chunk, index, day, from, to, yield) {
 				return false
 			}
 		}
@@ -162,19 +164,6 @@ func (l *Service) loadBitmap(ctx context.Context, key string, chunk codec.ChunkE
 		return nil, fmt.Errorf("failed to deserialize bitmap: %w", err)
 	}
 
-	return bm, nil
-}
-
-// mergeBitmaps downloads bitmap chunks and merges them.
-func (l *Service) mergeBitmaps(ctx context.Context, key string, chunk codec.ChunkEntry, entries iter.Seq[codec.IndexEntry]) (*roaring.Bitmap, error) {
-	bm := roaring.New()
-	for e := range entries {
-		bitmap, err := l.loadBitmap(ctx, key, chunk, e)
-		if err != nil {
-			continue // Skip entries that fail to process
-		}
-		bm.Or(bitmap)
-	}
 	return bm, nil
 }
 
