@@ -105,14 +105,6 @@ func TestEdgeCases(t *testing.T) {
 		assert.Equal(t, uint32(0), shortEntry.UncompressedSize())
 	})
 
-	t.Run("ShortChunkEntry", func(t *testing.T) {
-		shortEntry := ChunkEntry([]byte{1, 2, 3})
-
-		assert.Equal(t, uint64(0), shortEntry.Offset())
-		assert.Equal(t, uint32(0), shortEntry.IndexSize())
-		assert.Equal(t, uint32(0), shortEntry.BitmapSize())
-		assert.Equal(t, uint32(0), shortEntry.LogSize())
-	})
 }
 
 func TestCompression(t *testing.T) {
@@ -174,7 +166,6 @@ func TestCompression(t *testing.T) {
 
 func TestConstants(t *testing.T) {
 	t.Run("Sizes", func(t *testing.T) {
-		assert.Equal(t, 20, ChunkEntrySize)
 		assert.Equal(t, 24, IndexEntrySize)
 	})
 

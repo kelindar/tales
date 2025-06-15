@@ -8,7 +8,6 @@ import (
 )
 
 const (
-	ChunkEntrySize = 20 // 8 bytes offset + 4 bytes index size + 4 bytes bitmap size + 4 bytes log size
 	IndexEntrySize = 24 // 4 bytes timestamp + 4 bytes actor_id + 8 bytes offset + 4 bytes compressed size + 4 bytes uncompressed size
 )
 
@@ -18,8 +17,8 @@ type LogEntry []byte
 // IndexEntry represents an index entry as raw bytes
 type IndexEntry []byte
 
-// ChunkEntry represents a chunk entry as raw bytes
-type ChunkEntry []byte
+// ChunkEntry represents a chunk entry as [offset, indexSize, bitmapSize, logSize]
+type ChunkEntry [4]uint
 
 // NewLogEntry creates a new log entry from components
 func NewLogEntry(sequenceID uint32, text string, actors []uint32) (LogEntry, error) {
@@ -181,44 +180,27 @@ func (e IndexEntry) UncompressedSize() uint32 {
 
 // NewChunkEntry creates a new chunk entry
 func NewChunkEntry(offset uint64, indexSize, bitmapSize, logSize uint32) ChunkEntry {
-	buf := make([]byte, ChunkEntrySize)
-	binary.LittleEndian.PutUint64(buf[0:8], offset)
-	binary.LittleEndian.PutUint32(buf[8:12], indexSize)
-	binary.LittleEndian.PutUint32(buf[12:16], bitmapSize)
-	binary.LittleEndian.PutUint32(buf[16:20], logSize)
-	return ChunkEntry(buf)
+	return ChunkEntry{uint(offset), uint(indexSize), uint(bitmapSize), uint(logSize)}
 }
 
-// Offset extracts the offset from a chunk entry
+// Offset returns the chunk offset
 func (e ChunkEntry) Offset() uint64 {
-	if len(e) < 8 {
-		return 0
-	}
-	return binary.LittleEndian.Uint64(e[0:8])
+	return uint64(e[0])
 }
 
-// IndexSize extracts the index section size from a chunk entry
+// IndexSize returns the index section size
 func (e ChunkEntry) IndexSize() uint32 {
-	if len(e) < 12 {
-		return 0
-	}
-	return binary.LittleEndian.Uint32(e[8:12])
+	return uint32(e[1])
 }
 
-// BitmapSize extracts the bitmap section size from a chunk entry
+// BitmapSize returns the bitmap section size
 func (e ChunkEntry) BitmapSize() uint32 {
-	if len(e) < 16 {
-		return 0
-	}
-	return binary.LittleEndian.Uint32(e[12:16])
+	return uint32(e[2])
 }
 
-// LogSize extracts the log section size from a chunk entry
+// LogSize returns the log section size
 func (e ChunkEntry) LogSize() uint32 {
-	if len(e) < 20 {
-		return 0
-	}
-	return binary.LittleEndian.Uint32(e[16:20])
+	return uint32(e[3])
 }
 
 // BitmapOffset calculates the offset to the bitmap section within the merged file
