@@ -67,11 +67,9 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 			continue // Skip empty chunks
 		}
 
+		// Load all index entries and filter by actors and time range
 		chunkKey := keyOfChunk(date, chunk.Offset())
-
-		// Load all index entries for all actors in one pass
-		allEntries, err := l.loadIndex(ctx, chunkKey, chunk, func(entry codec.IndexEntry) bool {
-			// Check if this entry matches any of our actors and time range
+		entries, err := l.loadIndex(ctx, chunkKey, chunk, func(entry codec.IndexEntry) bool {
 			for _, actor := range actors {
 				if filterEntry(entry, actor, day, from, to) {
 					return true
@@ -85,7 +83,7 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 
 		// Process each entry once, building intersection directly
 		var index *roaring.Bitmap
-		for entry := range allEntries {
+		for entry := range entries {
 			if !slices.Contains(actors, entry.Actor()) {
 				continue // Skip entries that don't match any actor
 			}
