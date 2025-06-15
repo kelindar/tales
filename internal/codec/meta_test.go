@@ -13,8 +13,8 @@ func TestMetadata(t *testing.T) {
 		dayStart := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 		meta := NewMetadata(dayStart)
 
-		assert.Equal(t, dayStart.UnixNano(), meta.DayStart)
-		assert.Equal(t, uint32(0), meta.ChunkCount)
+		assert.Equal(t, dayStart.UnixNano(), meta.Date)
+		assert.Equal(t, uint32(0), meta.Length)
 		assert.Empty(t, meta.Chunks)
 	})
 
@@ -23,7 +23,7 @@ func TestMetadata(t *testing.T) {
 
 		// Add first chunk
 		meta.Append(0, 100, 200, 300)
-		assert.Equal(t, uint32(1), meta.ChunkCount)
+		assert.Equal(t, uint32(1), meta.Length)
 		assert.Len(t, meta.Chunks, 1)
 
 		// Verify chunk data
@@ -35,7 +35,7 @@ func TestMetadata(t *testing.T) {
 
 		// Add second chunk
 		meta.Append(1, 150, 250, 350)
-		assert.Equal(t, uint32(2), meta.ChunkCount)
+		assert.Equal(t, uint32(2), meta.Length)
 		assert.Len(t, meta.Chunks, 2)
 	})
 
@@ -60,8 +60,8 @@ func TestMetadata(t *testing.T) {
 		require.NoError(t, err)
 
 		// Verify all fields match
-		assert.Equal(t, original.DayStart, decoded.DayStart)
-		assert.Equal(t, original.ChunkCount, decoded.ChunkCount)
+		assert.Equal(t, original.Date, decoded.Date)
+		assert.Equal(t, original.Length, decoded.Length)
 		assert.Len(t, decoded.Chunks, len(original.Chunks))
 
 		// Verify chunks

@@ -7,15 +7,15 @@ import (
 
 // Metadata represents the metadata structure for log files.
 type Metadata struct {
-	DayStart   int64        `json:"day_start"`
-	ChunkCount uint32       `json:"chunk_count"`
-	Chunks     []ChunkEntry `json:"chunks"`
+	Date   int64        `json:"date"`
+	Length uint32       `json:"length"`
+	Chunks []ChunkEntry `json:"chunks"`
 }
 
 // NewMetadata creates a new metadata instance with default values.
 func NewMetadata(dayStart time.Time) *Metadata {
 	return &Metadata{
-		DayStart: dayStart.UnixNano(),
+		Date: dayStart.UnixNano(),
 	}
 }
 
@@ -37,6 +37,6 @@ func DecodeMetadata(data []byte) (*Metadata, error) {
 func (m *Metadata) Append(offset uint64, indexSize, bitmapSize, logSize uint32) *Metadata {
 	newChunk := NewChunkEntry(offset, indexSize, bitmapSize, logSize)
 	m.Chunks = append(m.Chunks, newChunk)
-	m.ChunkCount = uint32(len(m.Chunks))
+	m.Length = uint32(len(m.Chunks))
 	return m
 }

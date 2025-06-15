@@ -37,7 +37,7 @@ func (l *Service) flushBuffer(ctx context.Context, buf *buffer.Buffer) error {
 	// Create merged file with index + bitmap + log sections
 	date := seq.FormatDate(now)
 	flushTime := uint32(now.Sub(seq.DayOf(now)).Minutes())
-	chunkNumber := uint64(meta.ChunkCount)
+	chunkNumber := uint64(meta.Length)
 	chunkKey := keyOfChunk(date, chunkNumber)
 
 	// Build index entries without intermediate allocations
