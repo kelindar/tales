@@ -14,8 +14,8 @@ func TestS3ClientBasics(t *testing.T) {
 	server := s3mock.New("test-bucket", "us-east-1")
 	defer server.Close()
 
-	cfg := CreateConfigForMock(server, "test-bucket", "test")
-	client, err := NewMockClient(context.Background(), server, cfg)
+	cfg := NewMockConfig(server, "test-bucket", "test")
+	client, err := NewMockClient(server, cfg)
 	require.NoError(t, err)
 
 	ctx := context.Background()

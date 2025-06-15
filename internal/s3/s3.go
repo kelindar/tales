@@ -51,7 +51,7 @@ type S3Client struct {
 }
 
 // NewClient creates a new client using ambient credentials.
-func NewClient(ctx context.Context, cfg Config) (Client, error) {
+func NewClient(cfg Config) (Client, error) {
 	key, err := aws.AmbientKey("s3", s3lib.DeriveForBucket(cfg.Bucket))
 	if err != nil {
 		return nil, ErrS3Operation{Operation: "credentials", Err: err}

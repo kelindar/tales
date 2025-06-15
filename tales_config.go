@@ -1,7 +1,6 @@
 package tales
 
 import (
-	"context"
 	"fmt"
 	"time"
 
@@ -33,7 +32,7 @@ func WithRetries(n int) Option {
 }
 
 // WithClient allows overriding the S3 client creation function.
-func WithClient(fn func(context.Context, s3.Config) (s3.Client, error)) Option {
+func WithClient(fn func(s3.Config) (s3.Client, error)) Option {
 	return func(c *config) { c.NewClient = fn }
 }
 
@@ -43,7 +42,7 @@ type config struct {
 	S3Config      s3.Config
 	ChunkInterval time.Duration
 	BufferSize    int
-	NewClient     func(context.Context, s3.Config) (s3.Client, error)
+	NewClient     func(s3.Config) (s3.Client, error)
 }
 
 // setDefaults applies default values to the configuration.

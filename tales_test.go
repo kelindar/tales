@@ -1,7 +1,6 @@
 package tales
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -115,8 +114,8 @@ func newService() (*Service, error) {
 		WithPrefix("test-prefix"),
 		WithChunkInterval(1*time.Minute),
 		WithBufferSize(1024*1024),
-		WithClient(func(ctx context.Context, config s3.Config) (s3.Client, error) {
-			return s3.NewMockClient(ctx, mockS3, config)
+		WithClient(func(config s3.Config) (s3.Client, error) {
+			return s3.NewMockClient(mockS3, config)
 		}),
 	)
 }

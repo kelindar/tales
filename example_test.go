@@ -1,7 +1,6 @@
 package tales
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"time"
@@ -23,8 +22,8 @@ func Example() {
 		WithPrefix("events"),
 		WithChunkInterval(5*time.Minute),
 		WithBufferSize(1000),
-		WithClient(func(ctx context.Context, cfg s3.Config) (s3.Client, error) {
-			return s3.NewMockClient(ctx, mockServer, cfg)
+		WithClient(func(cfg s3.Config) (s3.Client, error) {
+			return s3.NewMockClient(mockServer, cfg)
 		}),
 	)
 	if err != nil {
