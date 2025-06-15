@@ -43,7 +43,7 @@ func (l *Service) queryDay(ctx context.Context, actor uint32, day time.Time, fro
 	date := seq.FormatDate(day)
 
 	// Build S3 key for metadata
-	tidx := buildMetadataKey(date)
+	tidx := keyOfMetadata(date)
 
 	// Download metadata file
 	metaBytes, err := l.s3Client.Download(ctx, tidx)
@@ -63,7 +63,7 @@ func (l *Service) queryDay(ctx context.Context, actor uint32, day time.Time, fro
 		}
 
 		// Load index section with filtering
-		chunkKey := buildChunkKey(date, chunk.Offset())
+		chunkKey := keyOfChunk(date, chunk.Offset())
 		entries, err := l.loadIndex(ctx, chunkKey, chunk, func(entry codec.IndexEntry) bool {
 			return filterEntry(entry, actor, day, from, to)
 		})

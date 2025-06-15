@@ -213,12 +213,12 @@ func (l *Service) flush() {
 	<-done
 }
 
-// buildMetadataKey builds the S3 object key for the metadata file for the provided date (YYYY-MM-DD).
-func buildMetadataKey(date string) string {
+// keyOfMetadata builds the S3 object key for the metadata file for the provided date (YYYY-MM-DD).
+func keyOfMetadata(date string) string {
 	return fmt.Sprintf("%s/metadata.json", date)
 }
 
-// buildChunkKey builds an S3 key for a specific chunk file inside the date folder.
-func buildChunkKey(date string, chunk uint64) string {
+// keyOfChunk builds an S3 key for a specific chunk file inside the date folder.
+func keyOfChunk(date string, chunk uint64) string {
 	return fmt.Sprintf("%s/%d.log", date, chunk)
 }

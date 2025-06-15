@@ -27,36 +27,24 @@ func (l *Service) flushBuffer(ctx context.Context, buf *buffer.Buffer) error {
 	}
 
 	now := time.Now()
-	day := seq.DayOf(now)
-	date := seq.FormatDate(now)
-	flushTimeMinutes := uint32(now.Sub(day).Minutes())
 
-	tidx := buildMetadataKey(date)
-
-	// 1. Read existing metadata file.
-	var meta *codec.Metadata
-	metaBytes, err := l.s3Client.Download(ctx, tidx)
-	switch {
-	case err != nil && s3.IsNoSuchKey(err):
-		meta = codec.NewMetadata(day)
-	case err != nil:
-		return fmt.Errorf("failed to download metadata: %w", err)
-	default:
-		meta, err = codec.DecodeMetadata(metaBytes)
-		if err != nil {
-			return fmt.Errorf("failed to decode metadata: %w", err)
-		}
+	// Read existing metadata file.
+	meta, err := l.downloadMetadata(ctx, now)
+	if err != nil {
+		return err
 	}
 
-	// 2. Create merged file with index + bitmap + log sections
+	// Create merged file with index + bitmap + log sections
+	date := seq.FormatDate(now)
+	flushTime := uint32(now.Sub(seq.DayOf(now)).Minutes())
 	chunkNumber := uint64(meta.ChunkCount)
-	chunkKey := buildChunkKey(date, chunkNumber)
+	chunkKey := keyOfChunk(date, chunkNumber)
 
 	// Build index entries without intermediate allocations
 	indexEntries := make([]codec.IndexEntry, 0, len(res.Index))
 	var bitmapOffset uint32
 	for _, rbm := range res.Index {
-		indexEntry := codec.NewIndexEntry(flushTimeMinutes, rbm.ActorID, uint64(bitmapOffset), rbm.CompressedSize, rbm.UncompressedSize)
+		indexEntry := codec.NewIndexEntry(flushTime, rbm.ActorID, uint64(bitmapOffset), rbm.CompressedSize, rbm.UncompressedSize)
 		indexEntries = append(indexEntries, indexEntry)
 		bitmapOffset += rbm.CompressedSize
 	}
@@ -75,14 +63,34 @@ func (l *Service) flushBuffer(ctx context.Context, buf *buffer.Buffer) error {
 		return fmt.Errorf("failed to upload merged chunk: %w", err)
 	}
 
-	// 3. Encode the metadata as JSON and upload it, overwriting the old one.
+	// Append a new chunk entry to the metadata and encode it
 	encodedMeta, err := codec.EncodeMetadata(
 		meta.Append(chunkNumber, indexSize, bitmapSize, logSize),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to encode metadata: %w", err)
 	}
-	return l.s3Client.Upload(ctx, tidx, encodedMeta)
+
+	// Upload metadata, overwriting the old one
+	return l.s3Client.Upload(ctx, keyOfMetadata(date), encodedMeta)
+}
+
+// downloadMetadata downloads the metadata file for the provided date.
+func (l *Service) downloadMetadata(ctx context.Context, now time.Time) (meta *codec.Metadata, err error) {
+	day := seq.FormatDate(now)
+	buf, err := l.s3Client.Download(ctx, keyOfMetadata(day))
+	switch { // Create a new one if it doesn't exist
+	case err != nil && s3.IsNoSuchKey(err):
+		meta = codec.NewMetadata(seq.DayOf(now))
+	case err != nil:
+		return nil, fmt.Errorf("failed to download metadata: %w", err)
+	default: // Downloaded successfully
+		meta, err = codec.DecodeMetadata(buf)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode metadata: %w", err)
+		}
+	}
+	return meta, nil
 }
 
 // newLogReader creates a streaming reader for chunk data without intermediate allocations.
