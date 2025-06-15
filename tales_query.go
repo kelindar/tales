@@ -143,28 +143,27 @@ func filterEntry(entry codec.IndexEntry, actor uint32, day, from, to time.Time) 
 
 // loadBitmap downloads and decodes a single bitmap for a given index entry.
 func (l *Service) loadBitmap(ctx context.Context, key string, chunk codec.ChunkEntry, entry codec.IndexEntry) (*roaring.Bitmap, error) {
-	// Calculate absolute offset within the merged file (bitmap section starts after index section)
-	bitmapSectionStart := int64(chunk.BitmapOffset())
-	absoluteStart := bitmapSectionStart + int64(entry.Offset())
-	absoluteEnd := absoluteStart + int64(entry.CompressedSize()) - 1
+	offset := int64(chunk.BitmapOffset())
+	i0 := offset + int64(entry.Offset())
+	i1 := i0 + int64(entry.CompressedSize()) - 1
 
-	compressed, err := l.s3Client.DownloadRange(ctx, key, absoluteStart, absoluteEnd)
+	compressed, err := l.s3Client.DownloadRange(ctx, key, i0, i1)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download bitmap chunk: %w", err)
 	}
 
 	// Decompress and deserialize bitmap
-	decompressed, err := l.codec.Decompress(compressed)
+	buffer, err := l.codec.Decompress(compressed)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decompress bitmap: %w", err)
 	}
 
-	bm := roaring.New()
-	if _, err := bm.FromBuffer(decompressed); err != nil {
+	output := roaring.New()
+	if _, err := output.FromBuffer(buffer); err != nil {
 		return nil, fmt.Errorf("failed to deserialize bitmap: %w", err)
 	}
 
-	return bm, nil
+	return output, nil
 }
 
 // queryChunk queries a specific log chunk for sequence IDs.
