@@ -44,11 +44,20 @@ func Example() {
 
 	fmt.Println("Events for player 12345:")
 	var count int
-	for _, text := range logger.Query(12345, from, to) {
+	for _, text := range logger.Query(from, to, 12345) {
 		fmt.Printf("- %s\n", text)
 		count++
 	}
 	fmt.Printf("Total events: %d\n", count)
+
+	// Query events involving both player and monster
+	fmt.Println("\nEvents involving both player 12345 and monster 67890:")
+	count = 0
+	for _, text := range logger.Query(from, to, 12345, 67890) {
+		fmt.Printf("- %s\n", text)
+		count++
+	}
+	fmt.Printf("Total intersection events: %d\n", count)
 
 	// Output:
 	// Events for player 12345:
@@ -57,4 +66,8 @@ func Example() {
 	// - Player attacked monster
 	// - Player gained 100 XP
 	// Total events: 4
+	//
+	// Events involving both player 12345 and monster 67890:
+	// - Player attacked monster
+	// Total intersection events: 1
 }

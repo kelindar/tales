@@ -1,9 +1,9 @@
 package buffer
 
 import (
-	"time"
-
 	"iter"
+	"slices"
+	"time"
 
 	"github.com/RoaringBitmap/roaring/v2"
 	"github.com/kelindar/tales/internal/codec"
@@ -66,7 +66,16 @@ func (b *Buffer) Add(entry codec.LogEntry) bool {
 
 // Query returns entries for a specific actor within a time range.
 func (b *Buffer) Query(actorID uint32, dayStart time.Time, from, to time.Time) iter.Seq[codec.LogEntry] {
+	return b.QueryActors(dayStart, from, to, []uint32{actorID})
+}
+
+// QueryActors returns entries that contain ALL specified actors within a time range.
+func (b *Buffer) QueryActors(dayStart time.Time, from, to time.Time, actors []uint32) iter.Seq[codec.LogEntry] {
 	return func(yield func(codec.LogEntry) bool) {
+		if len(actors) == 0 {
+			return
+		}
+
 		t0 := asSequence(from.UTC(), dayStart)
 		t1 := asSequence(to.UTC(), dayStart) | counterMask
 
@@ -77,14 +86,12 @@ func (b *Buffer) Query(actorID uint32, dayStart time.Time, from, to time.Time) i
 				return
 			}
 
-			// Check if this entry contains the actor
+			// Check if this entry contains ALL required actors
 			if id := entry.ID(); id >= t0 && id <= t1 {
-				for _, actor := range entry.Actors() {
-					if actor == actorID {
-						if !yield(entry[:size]) {
-							return
-						}
-						break
+				entryActors := entry.Actors()
+				if containsAllActors(entryActors, actors) {
+					if !yield(entry[:size]) {
+						return
 					}
 				}
 			}
@@ -92,6 +99,16 @@ func (b *Buffer) Query(actorID uint32, dayStart time.Time, from, to time.Time) i
 			buffer = buffer[size:]
 		}
 	}
+}
+
+// containsAllActors checks if entryActors contains all required actors.
+func containsAllActors(entryActors, requiredActors []uint32) bool {
+	for _, required := range requiredActors {
+		if !slices.Contains(entryActors, required) {
+			return false
+		}
+	}
+	return true
 }
 
 // Binary represents compressed data.

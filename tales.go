@@ -27,10 +27,10 @@ type command struct {
 
 // queryCmd represents a command to query the buffer.
 type queryCmd struct {
-	actor uint32
-	from  time.Time
-	to    time.Time
-	ret   chan<- iter.Seq[codec.LogEntry]
+	actors []uint32
+	from   time.Time
+	to     time.Time
+	ret    chan<- iter.Seq[codec.LogEntry]
 }
 
 // flushCmd represents a command to flush the buffer.
@@ -117,17 +117,23 @@ func (l *Service) Log(text string, actors ...uint32) error {
 	}
 }
 
-// Query returns an iterator over log entries for the specified actor and time range.
-func (l *Service) Query(actor uint32, from, to time.Time) iter.Seq2[time.Time, string] {
+// Query returns an iterator over log entries for the specified actors and time range.
+// Only entries that contain ALL specified actors will be returned.
+func (l *Service) Query(from, to time.Time, actors ...uint32) iter.Seq2[time.Time, string] {
 	return func(yield func(time.Time, string) bool) {
 		if atomic.LoadInt32(&l.closed) != 0 {
 			return
 		}
 
+		// Require at least one actor
+		if len(actors) == 0 {
+			return
+		}
+
 		// Query both memory and history.
 		// Query history first, then memory, to ensure chronological order (past to now).
-		l.queryHistory(context.Background(), actor, from, to, yield)
-		l.queryMemory(actor, from, to, yield)
+		l.queryHistory(context.Background(), actors, from, to, yield)
+		l.queryMemory(actors, from, to, yield)
 	}
 }
 
@@ -185,7 +191,7 @@ func (l *Service) run(ctx context.Context) {
 			}
 
 			if c := cmd.query; c != nil {
-				results := buf.Query(c.actor, seqGen.Day(), c.from, c.to)
+				results := buf.QueryActors(seqGen.Day(), c.from, c.to, c.actors)
 				c.ret <- results
 				continue
 			}

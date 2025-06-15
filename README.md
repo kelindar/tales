@@ -41,8 +41,15 @@ logger.Log("Player moved", 12345)
 // Query them back
 from := time.Now().Add(-10 * time.Minute)
 to := time.Now()
-for _, text := range logger.Query(12345, from, to) {
+
+// Query for a single actor
+for _, text := range logger.Query(from, to, 12345) {
     fmt.Println(text)
+}
+
+// Query for entries that contain ALL specified actors (intersection)
+for _, text := range logger.Query(from, to, 12345, 67890) {
+    fmt.Println("Event involving both actors:", text)
 }
 ```
 

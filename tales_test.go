@@ -28,7 +28,7 @@ func BenchmarkTales(b *testing.B) {
 		}
 
 		logger.flush()
-		logger.Query(1, time.Now().Add(-1*time.Hour), time.Now().Add(1*time.Hour))
+		logger.Query(time.Now().Add(-1*time.Hour), time.Now().Add(1*time.Hour), 1)
 	}
 
 	b.N = count
@@ -53,7 +53,7 @@ func TestIntegration(t *testing.T) {
 
 	// Query for actor 1
 	var results1 []string
-	for timestamp, msg := range logger.Query(1, from, to) {
+	for timestamp, msg := range logger.Query(from, to, 1) {
 		_ = timestamp // ignore timestamp for this test
 		results1 = append(results1, msg)
 	}
@@ -66,7 +66,7 @@ func TestIntegration(t *testing.T) {
 
 	// Query for actor 2
 	var results2 []string
-	for _, msg := range logger.Query(2, from, to) {
+	for _, msg := range logger.Query(from, to, 2) {
 		results2 = append(results2, msg)
 	}
 	assert.Equal(t, []string{
@@ -76,7 +76,7 @@ func TestIntegration(t *testing.T) {
 
 	// Query for actor 3
 	var results3 []string
-	for _, msg := range logger.Query(3, from, to) {
+	for _, msg := range logger.Query(from, to, 3) {
 		results3 = append(results3, msg)
 	}
 	assert.Equal(t, []string{
@@ -85,10 +85,19 @@ func TestIntegration(t *testing.T) {
 
 	// Query for actor 4 (no logs)
 	var results4 []string
-	for _, msg := range logger.Query(4, from, to) {
+	for _, msg := range logger.Query(from, to, 4) {
 		results4 = append(results4, msg)
 	}
 	assert.Empty(t, results4)
+
+	// Query for multiple actors (intersection)
+	var resultsMultiple []string
+	for _, msg := range logger.Query(from, to, 1, 2) {
+		resultsMultiple = append(resultsMultiple, msg)
+	}
+	assert.Equal(t, []string{
+		"hello world 4", // Only entry that has both actors 1 and 2
+	}, resultsMultiple)
 }
 
 func TestBuildKeys(t *testing.T) {

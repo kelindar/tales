@@ -12,9 +12,9 @@ import (
 )
 
 // queryMemory queries the in-memory buffer for entries.
-func (l *Service) queryMemory(actor uint32, from, to time.Time, yield func(time.Time, string) bool) {
+func (l *Service) queryMemory(actors []uint32, from, to time.Time, yield func(time.Time, string) bool) {
 	ret := make(chan iter.Seq[codec.LogEntry], 1)
-	l.commands <- command{query: &queryCmd{actor: actor, from: from, to: to, ret: ret}}
+	l.commands <- command{query: &queryCmd{actors: actors, from: from, to: to, ret: ret}}
 
 	day := seq.DayOf(from)
 	for entry := range <-ret {
@@ -25,13 +25,13 @@ func (l *Service) queryMemory(actor uint32, from, to time.Time, yield func(time.
 }
 
 // queryHistory implements the S3 historical query logic.
-func (l *Service) queryHistory(ctx context.Context, actor uint32, from, to time.Time, yield func(time.Time, string) bool) {
+func (l *Service) queryHistory(ctx context.Context, actors []uint32, from, to time.Time, yield func(time.Time, string) bool) {
 	// Query each day in the time range
 	current := seq.DayOf(from)
 	end := seq.DayOf(to).Add(24 * time.Hour)
 
 	for current.Before(end) {
-		if !l.queryDay(ctx, actor, current, from, to, yield) {
+		if !l.queryDay(ctx, actors, current, from, to, yield) {
 			return // yield returned false, stop iteration
 		}
 		current = current.Add(24 * time.Hour)
@@ -39,7 +39,11 @@ func (l *Service) queryHistory(ctx context.Context, actor uint32, from, to time.
 }
 
 // queryDay queries S3 data for a specific day.
-func (l *Service) queryDay(ctx context.Context, actor uint32, day time.Time, from, to time.Time, yield func(time.Time, string) bool) bool {
+func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, from, to time.Time, yield func(time.Time, string) bool) bool {
+	if len(actors) == 0 {
+		return true
+	}
+
 	date := seq.FormatDate(day)
 
 	// Build S3 key for metadata
@@ -56,30 +60,51 @@ func (l *Service) queryDay(ctx context.Context, actor uint32, day time.Time, fro
 		return true
 	}
 
-	// For each chunk, load its sections from the merged file
+	// For each chunk, compute intersection of bitmaps for all actors
 	for _, chunk := range meta.Chunks {
 		if chunk.IndexSize() == 0 {
 			continue // Skip empty chunks
 		}
 
-		// Load index section with filtering
 		chunkKey := keyOfChunk(date, chunk.Offset())
-		entries, err := l.loadIndex(ctx, chunkKey, chunk, func(entry codec.IndexEntry) bool {
-			return filterEntry(entry, actor, day, from, to)
-		})
-		if err != nil {
-			continue
+
+		// Load bitmaps for each actor and compute intersection
+		intersectionBitmap := roaring.New()
+		for i, actor := range actors {
+			// Load index entries for this actor
+			entries, err := l.loadIndex(ctx, chunkKey, chunk, func(entry codec.IndexEntry) bool {
+				return filterEntry(entry, actor, day, from, to)
+			})
+			if err != nil {
+				continue
+			}
+
+			// Load and merge bitmaps for this actor
+			actorBitmap, err := l.mergeBitmaps(ctx, chunkKey, chunk, entries)
+			if err != nil || actorBitmap.IsEmpty() {
+				// If any actor has no entries, intersection is empty
+				intersectionBitmap.Clear()
+				break
+			}
+
+			if i == 0 {
+				// First actor: initialize intersection
+				intersectionBitmap.Or(actorBitmap)
+			} else {
+				// Subsequent actors: compute intersection
+				intersectionBitmap.And(actorBitmap)
+				if intersectionBitmap.IsEmpty() {
+					// Early exit if intersection becomes empty
+					break
+				}
+			}
 		}
 
-		// Load and merge bitmaps
-		bm, err := l.mergeBitmaps(ctx, chunkKey, chunk, entries)
-		if err != nil || bm.IsEmpty() {
-			continue
-		}
-
-		// Query log section
-		if !l.queryChunk(ctx, chunkKey, chunk, bm, day, from, to, yield) {
-			return false
+		// Query log section with intersection bitmap
+		if !intersectionBitmap.IsEmpty() {
+			if !l.queryChunk(ctx, chunkKey, chunk, intersectionBitmap, day, from, to, yield) {
+				return false
+			}
 		}
 	}
 
