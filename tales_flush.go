@@ -31,7 +31,7 @@ func (l *Service) flushBuffer(ctx context.Context, buf *buffer.Buffer) error {
 	date := seq.FormatDate(now)
 	flushTimeMinutes := uint32(now.Sub(day).Minutes())
 
-	_, tidx, _, _ := buildDailyKeys(date)
+	tidx := buildMetadataKey(date)
 
 	// 1. Read existing metadata file.
 	var meta *codec.Metadata

@@ -11,7 +11,7 @@ import (
 )
 
 /*
-BenchmarkTales-12    	       1	9549168167 ns/op	     26822 log/s	182058528 B/op	 1027347 allocs/op
+BenchmarkTales-24    	 5078926	       209.0 ns/op	   4806405 log/s	     160 B/op	       3 allocs/op
 */
 func BenchmarkTales(b *testing.B) {
 	logger, err := newService()
@@ -91,13 +91,12 @@ func TestIntegration(t *testing.T) {
 	assert.Empty(t, results4)
 }
 
-func TestBuildDailyKeys(t *testing.T) {
-	tlog, tidx, alog, aidx := buildDailyKeys("2023-01-02")
-	assert.Equal(t, "2023-01-02/threads.log", tlog)
-	assert.Equal(t, "2023-01-02/threads.idx", tidx)
-	assert.Equal(t, "2023-01-02/actors.log", alog)
-	assert.Equal(t, "2023-01-02/actors.idx", aidx)
+func TestBuildKeys(t *testing.T) {
+	// Test metadata key
+	metadataKey := buildMetadataKey("2023-01-02")
+	assert.Equal(t, "2023-01-02/threads.idx", metadataKey)
 
+	// Test chunk-specific keys
 	chunk := uint64(5)
 	assert.Equal(t, "2023-01-02/5.log", buildChunkKey("2023-01-02", chunk))
 	assert.Equal(t, "2023-01-02/5.rbm", buildBitmapKey("2023-01-02", chunk))

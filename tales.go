@@ -213,13 +213,9 @@ func (l *Service) flush() {
 	<-done
 }
 
-// buildDailyKeys builds S3 object keys for the provided date (YYYY-MM-DD).
-func buildDailyKeys(date string) (threadsLog, threadsIdx, actorsLog, actorsIdx string) {
-	threadsLog = fmt.Sprintf("%s/threads.log", date)
-	threadsIdx = fmt.Sprintf("%s/threads.idx", date)
-	actorsLog = fmt.Sprintf("%s/actors.log", date)
-	actorsIdx = fmt.Sprintf("%s/actors.idx", date)
-	return
+// buildMetadataKey builds the S3 object key for the metadata file for the provided date (YYYY-MM-DD).
+func buildMetadataKey(date string) string {
+	return fmt.Sprintf("%s/threads.idx", date)
 }
 
 // buildChunkKey builds an S3 key for a specific chunk file inside the date folder.

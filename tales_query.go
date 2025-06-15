@@ -42,8 +42,8 @@ func (l *Service) queryHistory(ctx context.Context, actor uint32, from, to time.
 func (l *Service) queryDay(ctx context.Context, actor uint32, day time.Time, from, to time.Time, yield func(time.Time, string) bool) bool {
 	date := seq.FormatDate(day)
 
-	// Build S3 keys
-	_, tidx, _, _ := buildDailyKeys(date)
+	// Build S3 key for metadata
+	tidx := buildMetadataKey(date)
 
 	// Download metadata file
 	metaBytes, err := l.s3Client.Download(ctx, tidx)
