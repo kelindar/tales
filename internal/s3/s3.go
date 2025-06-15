@@ -24,6 +24,7 @@ type Config struct {
 // This matches the previous AWS SDK based implementation.
 type Client interface {
 	Upload(ctx context.Context, key string, data []byte) error
+	UploadReader(ctx context.Context, key string, reader io.ReaderAt, size int64) error
 	Download(ctx context.Context, key string) ([]byte, error)
 	DownloadRange(ctx context.Context, key string, start, end int64) ([]byte, error)
 	ObjectExists(ctx context.Context, key string) (bool, error)
@@ -73,6 +74,15 @@ func (c *S3Client) buildKey(key string) string {
 func (c *S3Client) Upload(ctx context.Context, key string, data []byte) error {
 	fullKey := c.buildKey(key)
 	if _, err := c.bucket.Write(ctx, fullKey, data); err != nil {
+		return ErrS3Operation{Operation: "write", Err: err}
+	}
+	return nil
+}
+
+// UploadReader uploads data from a ReaderAt to S3.
+func (c *S3Client) UploadReader(ctx context.Context, key string, reader io.ReaderAt, size int64) error {
+	fullKey := c.buildKey(key)
+	if err := c.bucket.WriteFrom(ctx, fullKey, reader, size); err != nil {
 		return ErrS3Operation{Operation: "write", Err: err}
 	}
 	return nil

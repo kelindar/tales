@@ -58,9 +58,12 @@ func (l *Service) queryDay(ctx context.Context, actor uint32, day time.Time, fro
 
 	// For each chunk, load its sections from the merged file
 	for _, chunk := range meta.Chunks {
-		chunkKey := buildChunkKey(date, chunk.Offset())
+		if chunk.IndexSize() == 0 {
+			continue // Skip empty chunks
+		}
 
 		// Load index section with filtering
+		chunkKey := buildChunkKey(date, chunk.Offset())
 		entries, err := l.loadIndex(ctx, chunkKey, chunk, func(entry codec.IndexEntry) bool {
 			return filterEntry(entry, actor, day, from, to)
 		})
@@ -85,13 +88,7 @@ func (l *Service) queryDay(ctx context.Context, actor uint32, day time.Time, fro
 
 // loadIndex downloads and parses the index section from a chunk file, yielding filtered entries.
 func (l *Service) loadIndex(ctx context.Context, key string, chunk codec.ChunkEntry, filter func(codec.IndexEntry) bool) (iter.Seq[codec.IndexEntry], error) {
-	indexSize := chunk.IndexSize()
-	if indexSize == 0 {
-		return func(yield func(codec.IndexEntry) bool) {}, nil // Empty iterator
-	}
-
-	// Download only the index section (from offset 0 to indexSize-1)
-	data, err := l.s3Client.DownloadRange(ctx, key, 0, int64(indexSize-1))
+	data, err := l.s3Client.DownloadRange(ctx, key, 0, int64(chunk.IndexSize()-1))
 	if err != nil {
 		return nil, err
 	}
