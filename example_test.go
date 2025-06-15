@@ -20,7 +20,7 @@ func Example() {
 		"example-bucket",
 		"us-east-1",
 		WithPrefix("events"),
-		WithChunkInterval(5*time.Minute),
+		WithInterval(5*time.Minute),
 		WithBufferSize(1000),
 		WithClient(func(cfg s3.Config) (s3.Client, error) {
 			return s3.NewMockClient(mockServer, cfg)

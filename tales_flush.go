@@ -13,7 +13,6 @@ import (
 
 // flushBuffer flushes the current buffer to S3 using a separate metadata file.
 func (l *Service) flushBuffer(ctx context.Context, buf *buffer.Buffer) error {
-
 	if buf.Size() == 0 {
 		return nil
 	}

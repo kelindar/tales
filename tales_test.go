@@ -112,7 +112,7 @@ func newService() (*Service, error) {
 		"test-bucket",
 		"us-east-1",
 		WithPrefix("test-prefix"),
-		WithChunkInterval(1*time.Minute),
+		WithInterval(1*time.Minute),
 		WithBufferSize(1024*1024),
 		WithClient(func(config s3.Config) (s3.Client, error) {
 			return s3.NewMockClient(mockS3, config)

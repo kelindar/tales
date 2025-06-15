@@ -11,8 +11,8 @@ import (
 // to New when constructing a logger.
 type Option func(*config)
 
-// WithChunkInterval sets the interval at which in-memory chunks are flushed.
-func WithChunkInterval(d time.Duration) Option {
+// WithInterval sets the interval at which in-memory chunks are flushed.
+func WithInterval(d time.Duration) Option {
 	return func(c *config) { c.ChunkInterval = d }
 }
 
