@@ -60,14 +60,11 @@ func (l *Service) queryDay(ctx context.Context, actor uint32, day time.Time, fro
 	for _, chunk := range meta.Chunks {
 		chunkKey := buildChunkKey(date, chunk.Offset())
 
-		// Load index section
-		entries, err := l.loadIndex(ctx, chunkKey, chunk)
+		// Load index section with filtering
+		entries, err := l.loadIndex(ctx, chunkKey, chunk, func(entry codec.IndexEntry) bool {
+			return filterEntry(entry, actor, day, from, to)
+		})
 		if err != nil {
-			continue
-		}
-
-		entries = l.filterEntries(entries, actor, day, from, to)
-		if len(entries) == 0 {
 			continue
 		}
 
@@ -86,11 +83,11 @@ func (l *Service) queryDay(ctx context.Context, actor uint32, day time.Time, fro
 	return true
 }
 
-// loadIndex downloads and parses the index section from a chunk file.
-func (l *Service) loadIndex(ctx context.Context, key string, chunk codec.ChunkEntry) ([]codec.IndexEntry, error) {
+// loadIndex downloads and parses the index section from a chunk file, yielding filtered entries.
+func (l *Service) loadIndex(ctx context.Context, key string, chunk codec.ChunkEntry, filter func(codec.IndexEntry) bool) (iter.Seq[codec.IndexEntry], error) {
 	indexSize := chunk.IndexSize()
 	if indexSize == 0 {
-		return nil, nil
+		return func(yield func(codec.IndexEntry) bool) {}, nil // Empty iterator
 	}
 
 	// Download only the index section (from offset 0 to indexSize-1)
@@ -103,29 +100,21 @@ func (l *Service) loadIndex(ctx context.Context, key string, chunk codec.ChunkEn
 		return nil, fmt.Errorf("invalid index section size")
 	}
 
-	count := len(data) / codec.IndexEntrySize
-	entries := make([]codec.IndexEntry, count)
-	for i := 0; i < count; i++ {
-		start := i * codec.IndexEntrySize
-		entries[i] = codec.IndexEntry(data[start : start+codec.IndexEntrySize])
-	}
-
-	return entries, nil
+	return func(yield func(codec.IndexEntry) bool) {
+		for i := 0; i < len(data); i += codec.IndexEntrySize {
+			entry := codec.IndexEntry(data[i : i+codec.IndexEntrySize])
+			if filter(entry) && !yield(entry) {
+				return // Stop iteration if yield returns false
+			}
+		}
+	}, nil
 }
 
-// filterEntries filters index entries by actor and time range.
-func (l *Service) filterEntries(entries []codec.IndexEntry, actor uint32, day, from, to time.Time) []codec.IndexEntry {
-	out := make([]codec.IndexEntry, 0, len(entries))
+// filterEntry filters a single index entry by actor and time range.
+func filterEntry(entry codec.IndexEntry, actor uint32, day, from, to time.Time) bool {
 	fromMin := uint32(from.Sub(day).Minutes())
 	toMin := uint32(to.Sub(day).Minutes())
-
-	for _, e := range entries {
-		if e.Actor() == actor && e.Time() >= fromMin && e.Time() <= toMin {
-			out = append(out, e)
-		}
-	}
-
-	return out
+	return entry.Actor() == actor && entry.Time() >= fromMin && entry.Time() <= toMin
 }
 
 // loadBitmap downloads and decodes a single bitmap for a given index entry.
@@ -155,9 +144,9 @@ func (l *Service) loadBitmap(ctx context.Context, key string, chunk codec.ChunkE
 }
 
 // mergeBitmaps downloads bitmap chunks and merges them.
-func (l *Service) mergeBitmaps(ctx context.Context, key string, chunk codec.ChunkEntry, entries []codec.IndexEntry) (*roaring.Bitmap, error) {
+func (l *Service) mergeBitmaps(ctx context.Context, key string, chunk codec.ChunkEntry, entries iter.Seq[codec.IndexEntry]) (*roaring.Bitmap, error) {
 	bm := roaring.New()
-	for _, e := range entries {
+	for e := range entries {
 		bitmap, err := l.loadBitmap(ctx, key, chunk, e)
 		if err != nil {
 			continue // Skip entries that fail to process
