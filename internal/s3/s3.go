@@ -56,7 +56,7 @@ func NewClient(ctx context.Context, cfg Config) (Client, error) {
 	if err != nil {
 		return nil, ErrS3Operation{Operation: "credentials", Err: err}
 	}
-	bucket := s3lib.NewBucket(ctx, key, cfg.Bucket)
+	bucket := s3lib.NewBucket(key, cfg.Bucket)
 	bucket.Lazy = true
 	return &S3Client{bucket: bucket, key: key, bucketName: cfg.Bucket, prefix: cfg.Prefix}, nil
 }
@@ -72,8 +72,8 @@ func (c *S3Client) buildKey(key string) string {
 // Upload overwrites an S3 object with the given data.
 func (c *S3Client) Upload(ctx context.Context, key string, data []byte) error {
 	fullKey := c.buildKey(key)
-	if _, err := c.bucket.Put(fullKey, data); err != nil {
-		return ErrS3Operation{Operation: "put", Err: err}
+	if _, err := c.bucket.Write(ctx, fullKey, data); err != nil {
+		return ErrS3Operation{Operation: "write", Err: err}
 	}
 	return nil
 }

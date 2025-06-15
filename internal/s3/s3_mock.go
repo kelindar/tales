@@ -21,7 +21,7 @@ func CreateConfigForMock(_ *s3mock.Server, bucket, prefix string) Config {
 func NewMockClient(ctx context.Context, server *s3mock.Server, cfg Config) (Client, error) {
 	key := aws.DeriveKey("", "test", "test", cfg.Region, "s3")
 	key.BaseURI = server.URL()
-	bucket := s3lib.NewBucket(ctx, key, cfg.Bucket)
+	bucket := s3lib.NewBucket(key, cfg.Bucket)
 	bucket.Lazy = true
 	return &S3Client{bucket: bucket, key: key, bucketName: cfg.Bucket, prefix: cfg.Prefix}, nil
 }
