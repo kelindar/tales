@@ -61,35 +61,25 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 	for _, chunk := range meta.Chunks {
 		chunkKey := keyOfChunk(seq.FormatDate(day), chunk.Offset)
 
-		// Collect bitmap entries for requested actors
-		entries := make([]codec.IndexEntry, 0, len(actors))
-		for _, a := range actors {
-			idx, ok := chunk.Actors[a]
-			if !ok {
-				entries = nil
-				break
-			}
-			if idx.Time < fromMin || idx.Time > toMin {
-				entries = nil
-				break
-			}
-			entries = append(entries, idx)
-		}
-		if len(entries) != len(actors) {
-			continue
-		}
-
-		// Process each entry once, building intersection directly
+		// Process each actor directly, building intersection as we go
 		var index *roaring.Bitmap
-		for _, entry := range entries {
-			bitmap, err := l.loadBitmap(ctx, chunkKey, entry)
+		for i, a := range actors {
+			idx, ok := chunk.Actors[a]
+			if !ok || idx.Time < fromMin || idx.Time > toMin {
+				index = nil
+				break
+			}
+
+			bitmap, err := l.loadBitmap(ctx, chunkKey, idx)
 			if err != nil {
 				index = nil
 				break
 			}
-			if index == nil {
+
+			switch {
+			case i == 0:
 				index = bitmap.Clone()
-			} else {
+			case index != nil:
 				index.And(bitmap)
 			}
 		}

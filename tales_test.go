@@ -38,6 +38,7 @@ func BenchmarkLog(b *testing.B) {
 /*
 cpu: 13th Gen Intel(R) Core(TM) i7-13700K
 BenchmarkQuery-24    	      60	  28469333 ns/op	        57.43 qps	360792949 B/op	   58913 allocs/op
+BenchmarkQuery-24    	      90	  20760861 ns/op	        85.35 qps	245520819 B/op	   51301 allocs/op
 */
 func BenchmarkQuery(b *testing.B) {
 	logger, err := newService()

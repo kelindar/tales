@@ -107,8 +107,8 @@ func (l *Service) Log(text string, actors ...uint32) error {
 		return fmt.Errorf("empty log entry")
 	case len(actors) == 0:
 		return fmt.Errorf("no actors specified")
-	case len(actors) > 65535:
-		return fmt.Errorf("too many actors (max 65535)")
+	case len(actors) > 1000:
+		return fmt.Errorf("too many actors (max 1000)")
 	case len(text) > 65535:
 		return fmt.Errorf("text too long (max 65535 bytes)")
 	case atomic.LoadInt32(&l.closed) != 0:
