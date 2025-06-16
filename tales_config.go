@@ -26,11 +26,6 @@ func WithPrefix(prefix string) Option {
 	return func(c *config) { c.S3Config.Prefix = prefix }
 }
 
-// WithRetries sets the (unused) retries parameter on the S3 config.
-func WithRetries(n int) Option {
-	return func(c *config) { c.S3Config.Retries = n }
-}
-
 // WithClient allows overriding the S3 client creation function.
 func WithClient(fn func(s3.Config) (s3.Client, error)) Option {
 	return func(c *config) { c.NewClient = fn }
