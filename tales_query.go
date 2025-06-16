@@ -6,9 +6,9 @@ import (
 	"iter"
 	"time"
 
-	"github.com/RoaringBitmap/roaring/v2"
 	"github.com/kelindar/tales/internal/codec"
 	"github.com/kelindar/tales/internal/seq"
+	"github.com/weaviate/sroar"
 )
 
 // queryWarm queries the in-memory buffer for entries.
@@ -62,7 +62,7 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 		chunkKey := keyOfChunk(seq.FormatDate(day), chunk.Offset)
 
 		// Process each actor directly, building intersection as we go
-		var index *roaring.Bitmap
+		var index *sroar.Bitmap
 		for i, a := range actors {
 			idx, ok := chunk.Actors[a]
 			if !ok || idx.Time < fromMin || idx.Time > toMin {
@@ -76,17 +76,16 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 				break
 			}
 
-			switch {
-			case i == 0:
-				index = bitmap.Clone()
-			case index != nil:
+			if i == 0 {
+				index = bitmap
+			} else if index != nil && !index.IsEmpty() {
 				index.And(bitmap)
 			}
 		}
 
 		// Query log section with intersection bitmap
 		if index != nil && !index.IsEmpty() {
-			if !l.queryChunk(ctx, chunkKey, chunk, index, day, from, to, yield) {
+			if !l.queryChunk(ctx, chunkKey, chunk, *index, day, from, to, yield) {
 				return false
 			}
 		}
@@ -96,7 +95,7 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 }
 
 // loadBitmap downloads and decodes a single bitmap for a given index entry.
-func (l *Service) loadBitmap(ctx context.Context, key string, entry codec.IndexEntry) (*roaring.Bitmap, error) {
+func (l *Service) loadBitmap(ctx context.Context, key string, entry codec.IndexEntry) (*sroar.Bitmap, error) {
 	i0 := int64(entry.Offset)
 	i1 := i0 + int64(entry.Size) - 1
 
@@ -111,16 +110,12 @@ func (l *Service) loadBitmap(ctx context.Context, key string, entry codec.IndexE
 		return nil, fmt.Errorf("failed to decompress bitmap: %w", err)
 	}
 
-	output := roaring.New()
-	if _, err := output.FromBuffer(buffer); err != nil {
-		return nil, fmt.Errorf("failed to deserialize bitmap: %w", err)
-	}
-
-	return output, nil
+	bm := sroar.FromBuffer(buffer)
+	return bm, nil
 }
 
 // queryChunk queries a specific log chunk for sequence IDs.
-func (l *Service) queryChunk(ctx context.Context, chunkKey string, chunk codec.ChunkEntry, sids *roaring.Bitmap, day, from, to time.Time, yield func(time.Time, string) bool) bool {
+func (l *Service) queryChunk(ctx context.Context, chunkKey string, chunk codec.ChunkEntry, sids sroar.Bitmap, day, from, to time.Time, yield func(time.Time, string) bool) bool {
 	entries, err := l.rangeChunks(ctx, chunkKey, chunk)
 	if err != nil {
 		return true // Skip chunks that fail to process
@@ -129,7 +124,7 @@ func (l *Service) queryChunk(ctx context.Context, chunkKey string, chunk codec.C
 	// Filter and yield matching entries
 	for entry := range entries {
 		id := entry.ID()
-		if !sids.Contains(id) {
+		if !sids.Contains(uint64(id)) {
 			continue
 		}
 

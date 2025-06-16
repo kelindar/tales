@@ -5,18 +5,18 @@ import (
 	"slices"
 	"time"
 
-	"github.com/RoaringBitmap/roaring/v2"
 	"github.com/kelindar/tales/internal/codec"
+	"github.com/weaviate/sroar"
 )
 
 // Buffer represents the in-memory buffer for the current chunk.
 type Buffer struct {
-	codec   *codec.Codec               // Codec for compression
-	data    []byte                     // Raw concatenated log entries
-	index   map[uint32]*roaring.Bitmap // Actor ID -> sequence IDs bitmap
-	length  int                        // Number of entries in buffer
-	maxSize int                        // Maximum number of entries
-	start   time.Time                  // Start time of the buffer
+	codec   *codec.Codec             // Codec for compression
+	data    []byte                   // Raw concatenated log entries
+	index   map[uint32]*sroar.Bitmap // Actor ID -> sequence IDs bitmap
+	length  int                      // Number of entries in buffer
+	maxSize int                      // Maximum number of entries
+	start   time.Time                // Start time of the buffer
 }
 
 // New creates a new buffer with the specified maximum size.
@@ -24,7 +24,7 @@ func New(maxSize int, codec *codec.Codec) *Buffer {
 	return &Buffer{
 		codec:   codec,
 		data:    make([]byte, 0, maxSize*100), // Estimate ~100 bytes per entry
-		index:   make(map[uint32]*roaring.Bitmap),
+		index:   make(map[uint32]*sroar.Bitmap),
 		length:  0,
 		maxSize: maxSize,
 		start:   time.Now(),
@@ -53,12 +53,12 @@ func (b *Buffer) Add(entry codec.LogEntry) bool {
 
 	// Update actor bitmaps
 	for _, actorID := range actors {
-		bitmap := b.index[actorID]
-		if bitmap == nil {
-			bitmap = roaring.New()
+		bitmap, ok := b.index[actorID]
+		if !ok || bitmap == nil {
+			bitmap = sroar.NewBitmap()
 			b.index[actorID] = bitmap
 		}
-		bitmap.Add(sequenceID)
+		bitmap.Set(uint64(sequenceID))
 	}
 
 	return true
@@ -148,11 +148,10 @@ func (b *Buffer) Flush() (Flush, error) {
 	// Compress bitmaps
 	compressedBitmaps := make([]Index, 0, len(b.index))
 	for actorID, bm := range b.index {
-		// Serialize bitmap
-		bitmapData, err := bm.ToBytes()
-		if err != nil {
-			return Flush{}, err
+		if bm == nil {
+			continue
 		}
+		bitmapData := bm.ToBuffer()
 
 		// Compress bitmap
 		compressedBitmapData, err := b.codec.Compress(bitmapData)
@@ -180,8 +179,8 @@ func (b *Buffer) Flush() (Flush, error) {
 func (b *Buffer) reset() {
 	b.data = b.data[:0]
 	b.length = 0
-	for _, bm := range b.index {
-		bm.Clear()
+	for k := range b.index {
+		b.index[k] = sroar.NewBitmap()
 	}
 	b.start = time.Now()
 }
