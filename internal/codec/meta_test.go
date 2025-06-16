@@ -22,19 +22,18 @@ func TestMetadata(t *testing.T) {
 		meta := NewMetadata(time.Now())
 
 		// Add first chunk
-		meta.Append(0, 100, 200, 300)
+		meta.Append(0, 200, 300, nil)
 		assert.Equal(t, uint32(1), meta.Length)
 		assert.Len(t, meta.Chunks, 1)
 
 		// Verify chunk data
 		chunk := meta.Chunks[0]
-		assert.Equal(t, uint64(0), chunk.Offset())
-		assert.Equal(t, uint32(100), chunk.IndexSize())
-		assert.Equal(t, uint32(200), chunk.BitmapSize())
-		assert.Equal(t, uint32(300), chunk.LogSize())
+		assert.Equal(t, uint64(0), chunk.Offset)
+		assert.Equal(t, uint32(200), chunk.BitmapSize)
+		assert.Equal(t, uint32(300), chunk.LogSize)
 
 		// Add second chunk
-		meta.Append(1, 150, 250, 350)
+		meta.Append(1, 250, 350, nil)
 		assert.Equal(t, uint32(2), meta.Length)
 		assert.Len(t, meta.Chunks, 2)
 	})
@@ -43,8 +42,8 @@ func TestMetadata(t *testing.T) {
 		// Create metadata with some data
 		dayStart := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 		original := NewMetadata(dayStart)
-		original.Append(0, 100, 200, 300)
-		original.Append(1, 150, 250, 350)
+		original.Append(0, 200, 300, nil)
+		original.Append(1, 250, 350, nil)
 
 		// Encode to JSON
 		encoded, err := EncodeMetadata(original)
@@ -67,10 +66,9 @@ func TestMetadata(t *testing.T) {
 		// Verify chunks
 		for i, originalChunk := range original.Chunks {
 			decodedChunk := decoded.Chunks[i]
-			assert.Equal(t, originalChunk.Offset(), decodedChunk.Offset())
-			assert.Equal(t, originalChunk.IndexSize(), decodedChunk.IndexSize())
-			assert.Equal(t, originalChunk.BitmapSize(), decodedChunk.BitmapSize())
-			assert.Equal(t, originalChunk.LogSize(), decodedChunk.LogSize())
+			assert.Equal(t, originalChunk.Offset, decodedChunk.Offset)
+			assert.Equal(t, originalChunk.BitmapSize, decodedChunk.BitmapSize)
+			assert.Equal(t, originalChunk.LogSize, decodedChunk.LogSize)
 		}
 	})
 
