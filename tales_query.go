@@ -1,11 +1,10 @@
 package tales
 
 import (
-	"context"
-	"fmt"
-	"iter"
-	"slices"
-	"time"
+       "context"
+       "fmt"
+       "iter"
+       "time"
 
 	"github.com/RoaringBitmap/roaring/v2"
 	"github.com/kelindar/tales/internal/codec"
@@ -48,32 +47,40 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 		return true
 	}
 
-	// For each chunk, load all relevant bitmaps and compute intersection
-	for _, chunk := range meta.Chunks {
+       // Pre-compute time range in minutes once per day
+       fromMin := uint32(from.Sub(day).Minutes())
+       toMin := uint32(to.Sub(day).Minutes())
+
+       // Build a quick membership map for actors
+       actorSet := make(map[uint32]struct{}, len(actors))
+       for _, a := range actors {
+               actorSet[a] = struct{}{}
+       }
+
+       // For each chunk, load all relevant bitmaps and compute intersection
+       for _, chunk := range meta.Chunks {
 		if chunk.IndexSize() == 0 {
 			continue // Skip empty chunks
 		}
 
 		// Load all index entries and filter by actors and time range
 		chunkKey := keyOfChunk(seq.FormatDate(day), chunk.Offset())
-		entries, err := l.loadIndex(ctx, chunkKey, chunk, func(entry codec.IndexEntry) bool {
-			for _, actor := range actors {
-				if filterEntry(entry, actor, day, from, to) {
-					return true
-				}
-			}
-			return false
-		})
+               entries, err := l.loadIndex(ctx, chunkKey, chunk, func(entry codec.IndexEntry) bool {
+                       if _, ok := actorSet[entry.Actor()]; !ok {
+                               return false
+                       }
+                       return filterEntry(entry, entry.Actor(), fromMin, toMin)
+               })
 		if err != nil {
 			continue
 		}
 
 		// Process each entry once, building intersection directly
-		var index *roaring.Bitmap
-		for entry := range entries {
-			if !slices.Contains(actors, entry.Actor()) {
-				continue // Skip entries that don't match any actor
-			}
+               var index *roaring.Bitmap
+               for entry := range entries {
+                       if _, ok := actorSet[entry.Actor()]; !ok {
+                               continue // Skip entries that don't match any actor
+                       }
 
 			// Load this specific bitmap
 			bitmap, err := l.loadBitmap(ctx, chunkKey, chunk, entry)
@@ -120,10 +127,8 @@ func (l *Service) loadIndex(ctx context.Context, key string, chunk codec.ChunkEn
 }
 
 // filterEntry filters a single index entry by actor and time range.
-func filterEntry(entry codec.IndexEntry, actor uint32, day, from, to time.Time) bool {
-	fromMin := uint32(from.Sub(day).Minutes())
-	toMin := uint32(to.Sub(day).Minutes())
-	return entry.Actor() == actor && entry.Time() >= fromMin && entry.Time() <= toMin
+func filterEntry(entry codec.IndexEntry, actor uint32, fromMin, toMin uint32) bool {
+        return entry.Actor() == actor && entry.Time() >= fromMin && entry.Time() <= toMin
 }
 
 // loadBitmap downloads and decodes a single bitmap for a given index entry.
