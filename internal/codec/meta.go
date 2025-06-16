@@ -60,11 +60,26 @@ func NewChunkEntry(offset uint64, bitmapSize, logSize uint32, actors map[uint32]
 	return ChunkEntry{Location: [3]uint{uint(offset), uint(bitmapSize), uint(logSize)}, Actors: actors}
 }
 
+// Offset returns the chunk offset.
+func (e ChunkEntry) Offset() uint64 {
+	return uint64(e.Location[0])
+}
+
+// BitmapSize returns the bitmap size.
+func (e ChunkEntry) BitmapSize() uint32 {
+	return uint32(e.Location[1])
+}
+
+// LogSize returns the log size.
+func (e ChunkEntry) LogSize() uint32 {
+	return uint32(e.Location[2])
+}
+
 // BitmapOffset calculates the offset to the bitmap section within the merged file.
 func (e ChunkEntry) BitmapOffset() uint32 { return 0 }
 
 // LogOffset calculates the offset to the log section within the merged file.
-func (e ChunkEntry) LogOffset() uint32 { return uint32(e.Location[1]) }
+func (e ChunkEntry) LogOffset() uint32 { return e.BitmapSize() }
 
 // TotalSize calculates the total size of the merged file.
-func (e ChunkEntry) TotalSize() uint32 { return uint32(e.Location[1]) + uint32(e.Location[2]) }
+func (e ChunkEntry) TotalSize() uint32 { return e.BitmapSize() + e.LogSize() }
