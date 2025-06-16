@@ -99,18 +99,13 @@ func (l *Service) loadBitmap(ctx context.Context, key string, entry codec.IndexE
 	i0 := int64(entry.Offset)
 	i1 := i0 + int64(entry.Size) - 1
 
-	compressed, err := l.s3Client.DownloadRange(ctx, key, i0, i1)
+	data, err := l.s3Client.DownloadRange(ctx, key, i0, i1)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download bitmap chunk: %w", err)
 	}
 
-	// Decompress and deserialize bitmap
-	buffer, err := l.codec.Decompress(compressed)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decompress bitmap: %w", err)
-	}
-
-	bm := sroar.FromBuffer(buffer)
+	// Bitmaps are stored uncompressed, so just deserialize
+	bm := sroar.FromBuffer(data)
 	return bm, nil
 }
 

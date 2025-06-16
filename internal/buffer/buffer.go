@@ -153,18 +153,13 @@ func (b *Buffer) Flush() (Flush, error) {
 		}
 		bitmapData := bm.ToBuffer()
 
-		// Compress bitmap
-		compressedBitmapData, err := b.codec.Compress(bitmapData)
-		if err != nil {
-			return Flush{}, err
-		}
-
+		// Do not compress bitmap, just store raw bytes
 		compressedBitmaps = append(compressedBitmaps, Index{
 			ActorID: actorID,
 			Binary: Binary{
 				UncompressedSize: uint32(len(bitmapData)),
-				CompressedSize:   uint32(len(compressedBitmapData)),
-				CompressedData:   compressedBitmapData,
+				CompressedSize:   uint32(len(bitmapData)),
+				CompressedData:   bitmapData,
 			},
 		})
 	}
