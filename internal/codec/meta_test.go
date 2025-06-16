@@ -28,9 +28,9 @@ func TestMetadata(t *testing.T) {
 
 		// Verify chunk data
 		chunk := meta.Chunks[0]
-		assert.Equal(t, uint64(0), chunk.Offset)
-		assert.Equal(t, uint32(200), chunk.BitmapSize)
-		assert.Equal(t, uint32(300), chunk.LogSize)
+		assert.Equal(t, uint64(0), uint64(chunk.Location[0]))
+		assert.Equal(t, uint32(200), uint32(chunk.Location[1]))
+		assert.Equal(t, uint32(300), uint32(chunk.Location[2]))
 
 		// Add second chunk
 		meta.Append(1, 250, 350, nil)
@@ -66,9 +66,9 @@ func TestMetadata(t *testing.T) {
 		// Verify chunks
 		for i, originalChunk := range original.Chunks {
 			decodedChunk := decoded.Chunks[i]
-			assert.Equal(t, originalChunk.Offset, decodedChunk.Offset)
-			assert.Equal(t, originalChunk.BitmapSize, decodedChunk.BitmapSize)
-			assert.Equal(t, originalChunk.LogSize, decodedChunk.LogSize)
+			assert.Equal(t, originalChunk.Location[0], decodedChunk.Location[0])
+			assert.Equal(t, originalChunk.Location[1], decodedChunk.Location[1])
+			assert.Equal(t, originalChunk.Location[2], decodedChunk.Location[2])
 		}
 	})
 

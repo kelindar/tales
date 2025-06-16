@@ -59,7 +59,7 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 
 	// For each chunk, load all relevant bitmaps and compute intersection
 	for _, chunk := range meta.Chunks {
-		chunkKey := keyOfChunk(seq.FormatDate(day), chunk.Offset)
+		chunkKey := keyOfChunk(seq.FormatDate(day), uint64(chunk.Location[0]))
 		var index *sroar.Bitmap
 		for i, a := range actors {
 			idx, ok := chunk.Actors[a]
@@ -132,12 +132,12 @@ func (l *Service) queryChunk(ctx context.Context, chunkKey string, chunk codec.C
 
 // rangeChunks downloads the log section from a chunk file, decompresses it, and returns an iterator over log entries.
 func (l *Service) rangeChunks(ctx context.Context, chunkKey string, chunk codec.ChunkEntry) (iter.Seq[codec.LogEntry], error) {
-	if chunk.LogSize == 0 {
+	if uint32(chunk.Location[2]) == 0 {
 		return func(yield func(codec.LogEntry) bool) {}, nil // Empty iterator
 	}
 
 	i0 := int64(chunk.LogOffset())
-	i1 := i0 + int64(chunk.LogSize) - 1
+	i1 := i0 + int64(chunk.Location[2]) - 1
 	compressed, err := l.s3Client.DownloadRange(ctx, chunkKey, i0, i1)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download log section: %w", err)

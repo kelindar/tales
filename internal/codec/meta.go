@@ -10,10 +10,8 @@ type IndexEntry [3]uint
 
 // ChunkEntry represents a chunk entry stored in metadata.
 type ChunkEntry struct {
-	Offset     uint64                `json:"idx"`
-	BitmapSize uint32                `json:"bmp"`
-	LogSize    uint32                `json:"log"`
-	Actors     map[uint32]IndexEntry `json:"act,omitempty"`
+	Location [3]uint               `json:"loc"`
+	Actors   map[uint32]IndexEntry `json:"act,omitempty"`
 }
 
 // Metadata represents the metadata structure for log files.
@@ -57,17 +55,16 @@ func NewIndexEntry(timestamp uint32, offset uint64, size uint32) IndexEntry {
 	return IndexEntry{uint(timestamp), uint(offset), uint(size)}
 }
 
-// NewChunkEntry creates a new chunk entry
 // NewChunkEntry creates a new chunk entry.
 func NewChunkEntry(offset uint64, bitmapSize, logSize uint32, actors map[uint32]IndexEntry) ChunkEntry {
-	return ChunkEntry{Offset: offset, BitmapSize: bitmapSize, LogSize: logSize, Actors: actors}
+	return ChunkEntry{Location: [3]uint{uint(offset), uint(bitmapSize), uint(logSize)}, Actors: actors}
 }
 
 // BitmapOffset calculates the offset to the bitmap section within the merged file.
 func (e ChunkEntry) BitmapOffset() uint32 { return 0 }
 
 // LogOffset calculates the offset to the log section within the merged file.
-func (e ChunkEntry) LogOffset() uint32 { return e.BitmapSize }
+func (e ChunkEntry) LogOffset() uint32 { return uint32(e.Location[1]) }
 
 // TotalSize calculates the total size of the merged file.
-func (e ChunkEntry) TotalSize() uint32 { return e.BitmapSize + e.LogSize }
+func (e ChunkEntry) TotalSize() uint32 { return uint32(e.Location[1]) + uint32(e.Location[2]) }
