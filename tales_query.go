@@ -43,19 +43,9 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 	}
 
 	// Retrieve metadata from cache or S3
-	date := seq.FormatDate(day)
-	meta, ok := l.metaLRU.Get(date)
-	if !ok {
-		tidx := keyOfMetadata(date)
-		metaBytes, err := l.s3Client.Download(ctx, tidx)
-		if err != nil || len(metaBytes) == 0 {
-			return true
-		}
-		meta, err = codec.DecodeMetadata(metaBytes)
-		if err != nil || meta == nil {
-			return true
-		}
-		l.metaLRU.Add(date, meta)
+	meta, err := l.downloadMetadata(ctx, day)
+	if err != nil {
+		return true
 	}
 
 	// For each chunk, load all relevant bitmaps and compute intersection
@@ -65,7 +55,7 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 		}
 
 		// Load all index entries and filter by actors and time range
-		chunkKey := keyOfChunk(date, chunk.Offset())
+		chunkKey := keyOfChunk(seq.FormatDate(day), chunk.Offset())
 		entries, err := l.loadIndex(ctx, chunkKey, chunk, func(entry codec.IndexEntry) bool {
 			for _, actor := range actors {
 				if filterEntry(entry, actor, day, from, to) {

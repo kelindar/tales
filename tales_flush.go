@@ -28,10 +28,10 @@ func (l *Service) flushBuffer(ctx context.Context, buf *buffer.Buffer) error {
 
 	now := time.Now()
 
-	// Read existing metadata file.
+	// Read existing metadata file. If it doesn't exist, create a new one.
 	meta, err := l.downloadMetadata(ctx, now)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to download metadata: %w", err)
 	}
 
 	// Create merged file with index + bitmap + log sections
@@ -72,23 +72,32 @@ func (l *Service) flushBuffer(ctx context.Context, buf *buffer.Buffer) error {
 	}
 
 	// Upload metadata, overwriting the old one
+	l.metaLRU.Add(date, meta)
 	return l.s3Client.Upload(ctx, keyOfMetadata(date), encodedMeta)
 }
 
 // downloadMetadata downloads the metadata file for the provided date.
 func (l *Service) downloadMetadata(ctx context.Context, now time.Time) (meta *codec.Metadata, err error) {
-	day := seq.FormatDate(now)
-	buf, err := l.s3Client.Download(ctx, keyOfMetadata(day))
+	date := seq.FormatDate(now)
+	meta, ok := l.metaLRU.Get(date)
+	if ok {
+		return meta, nil
+	}
+
+	buf, err := l.s3Client.Download(ctx, keyOfMetadata(date))
 	switch { // Create a new one if it doesn't exist
 	case err != nil && s3.IsNoSuchKey(err):
 		meta = codec.NewMetadata(seq.DayOf(now))
 	case err != nil:
-		return nil, fmt.Errorf("failed to download metadata: %w", err)
+		return nil, err
 	default: // Downloaded successfully
 		meta, err = codec.DecodeMetadata(buf)
 		if err != nil {
 			return nil, fmt.Errorf("failed to decode metadata: %w", err)
 		}
+
+		// Cache the metadata
+		l.metaLRU.Add(date, meta)
 	}
 	return meta, nil
 }
