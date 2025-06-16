@@ -51,17 +51,11 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 	t0 := uint32(from.Sub(day).Minutes())
 	t1 := uint32(to.Sub(day).Minutes())
 
-	// Build a quick membership map for actors
-	actorSet := make(map[uint32]struct{}, len(actors))
-	for _, a := range actors {
-		actorSet[a] = struct{}{}
-	}
-
 	// For each chunk, load all relevant bitmaps and compute intersection
 	for _, chunk := range meta.Chunks {
 		chunkKey := keyOfChunk(seq.FormatDate(day), chunk.Offset())
 		var index *sroar.Bitmap
-		for i, a := range actors {
+		for _, a := range actors {
 			idx, ok := chunk.Actors[a]
 			if !ok || uint32(idx[0]) < t0 || uint32(idx[0]) > t1 {
 				index = nil
@@ -74,9 +68,10 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 				break
 			}
 
-			if i == 0 {
+			switch {
+			case index == nil:
 				index = bitmap
-			} else if index != nil && !index.IsEmpty() {
+			case !index.IsEmpty():
 				index.And(bitmap)
 			}
 		}
@@ -107,20 +102,22 @@ func (l *Service) loadBitmap(ctx context.Context, key string, entry codec.IndexE
 	return bm, nil
 }
 
-// queryChunk queries a specific log chunk for sequence IDs.
+// queryChunk queries a specific log chunk for sequence IDs using an optimized bitmap iterator.
+// This function efficiently filters log entries by leveraging the sorted nature of both the log entries
+// and the bitmap, avoiding unnecessary bitmap lookups for entries that don't match.
 func (l *Service) queryChunk(ctx context.Context, chunkKey string, chunk codec.ChunkEntry, sids sroar.Bitmap, day, from, to time.Time, yield func(time.Time, string) bool) bool {
-	entries, err := l.rangeChunks(ctx, chunkKey, chunk)
+	if sids.IsEmpty() {
+		return true
+	}
+
+	entries, err := l.rangeChunks(ctx, chunkKey, chunk, &sids)
 	if err != nil {
 		return true // Skip chunks that fail to process
 	}
 
-	// Filter and yield matching entries
+	// Process only the filtered entries
 	for entry := range entries {
 		id := entry.ID()
-		if !sids.Contains(uint64(id)) {
-			continue
-		}
-
 		ts := seq.TimeOf(id, day)
 		if !ts.Before(from) && !ts.After(to) && !yield(ts, entry.Text()) {
 			return false // Stop iteration
@@ -130,9 +127,10 @@ func (l *Service) queryChunk(ctx context.Context, chunkKey string, chunk codec.C
 	return true
 }
 
-// rangeChunks downloads the log section from a chunk file, decompresses it, and returns an iterator over log entries.
-func (l *Service) rangeChunks(ctx context.Context, chunkKey string, chunk codec.ChunkEntry) (iter.Seq[codec.LogEntry], error) {
-	if chunk.LogSize() == 0 {
+// rangeChunks downloads the log section from a chunk file, decompresses it, and returns
+// an iterator over log entries that are filtered using an optimized bitmap iterator merge algorithm.
+func (l *Service) rangeChunks(ctx context.Context, chunkKey string, chunk codec.ChunkEntry, sids *sroar.Bitmap) (iter.Seq[codec.LogEntry], error) {
+	if chunk.LogSize() == 0 || sids.IsEmpty() {
 		return func(yield func(codec.LogEntry) bool) {}, nil // Empty iterator
 	}
 
@@ -150,16 +148,35 @@ func (l *Service) rangeChunks(ctx context.Context, chunkKey string, chunk codec.
 	}
 
 	return func(yield func(codec.LogEntry) bool) {
-		for len(buffer) > 4 {
+		iter := sids.NewIterator()
+		idx := iter.Next()
+		for len(buffer) > 4 && idx != 0 {
 			entry := codec.LogEntry(buffer)
 			size := entry.Size()
 			if size == 0 || uint32(len(buffer)) < size {
 				return // Invalid size or not enough data, stop iteration
 			}
 
-			if !yield(entry[:size]) {
-				return // Stop iteration if yield returns false
+			// Advance bitmap iterator until we find a target >= current entry ID
+			entryID := uint64(entry.ID())
+			for idx != 0 && idx < entryID {
+				idx = iter.Next()
 			}
+
+			// If we've exhausted all targets, we're done
+			if idx == 0 {
+				return
+			}
+
+			// If current entry matches current target, yield it
+			if entryID == idx {
+				if !yield(entry[:size]) {
+					return // Stop iteration if yield returns false
+				}
+				idx = iter.Next()
+			}
+
+			// Always advance buffer after processing each entry
 			buffer = buffer[size:]
 		}
 	}, nil
