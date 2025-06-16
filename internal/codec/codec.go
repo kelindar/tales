@@ -7,24 +7,8 @@ import (
 	"github.com/kelindar/tales/internal/seq"
 )
 
-// IndexEntry represents metadata about an actor bitmap within a chunk.
-type IndexEntry struct {
-	Time             uint32 `json:"time"`
-	Offset           uint64 `json:"offset"`
-	Size             uint32 `json:"size"`
-	UncompressedSize uint32 `json:"usize"`
-}
-
 // LogEntry represents a single log entry as raw bytes
 type LogEntry []byte
-
-// ChunkEntry represents a chunk entry stored in metadata.
-type ChunkEntry struct {
-	Offset     uint64                `json:"offset"`
-	BitmapSize uint32                `json:"bitmapSize"`
-	LogSize    uint32                `json:"logSize"`
-	Actors     map[uint32]IndexEntry `json:"actors,omitempty"`
-}
 
 // NewLogEntry creates a new log entry from components
 func NewLogEntry(sequenceID uint32, text string, actors []uint32) (LogEntry, error) {
@@ -132,23 +116,3 @@ func (e LogEntry) Actors() []uint32 {
 
 	return actors
 }
-
-// NewIndexEntry allocates a new index entry.
-func NewIndexEntry(timestamp uint32, offset uint64, size, usize uint32) IndexEntry {
-	return IndexEntry{Time: timestamp, Offset: offset, Size: size, UncompressedSize: usize}
-}
-
-// NewChunkEntry creates a new chunk entry
-// NewChunkEntry creates a new chunk entry.
-func NewChunkEntry(offset uint64, bitmapSize, logSize uint32, actors map[uint32]IndexEntry) ChunkEntry {
-	return ChunkEntry{Offset: offset, BitmapSize: bitmapSize, LogSize: logSize, Actors: actors}
-}
-
-// BitmapOffset calculates the offset to the bitmap section within the merged file.
-func (e ChunkEntry) BitmapOffset() uint32 { return 0 }
-
-// LogOffset calculates the offset to the log section within the merged file.
-func (e ChunkEntry) LogOffset() uint32 { return e.BitmapSize }
-
-// TotalSize calculates the total size of the merged file.
-func (e ChunkEntry) TotalSize() uint32 { return e.BitmapSize + e.LogSize }

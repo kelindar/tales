@@ -5,6 +5,17 @@ import (
 	"time"
 )
 
+// IndexEntry represents metadata about an actor bitmap within a chunk.
+type IndexEntry [3]uint
+
+// ChunkEntry represents a chunk entry stored in metadata.
+type ChunkEntry struct {
+	Offset     uint64                `json:"idx"`
+	BitmapSize uint32                `json:"bmp"`
+	LogSize    uint32                `json:"log"`
+	Actors     map[uint32]IndexEntry `json:"act,omitempty"`
+}
+
 // Metadata represents the metadata structure for log files.
 type Metadata struct {
 	Date   int64        `json:"date"`
@@ -40,3 +51,23 @@ func (m *Metadata) Append(offset uint64, bitmapSize, logSize uint32, actors map[
 	m.Length = uint32(len(m.Chunks))
 	return m
 }
+
+// NewIndexEntry allocates a new index entry.
+func NewIndexEntry(timestamp uint32, offset uint64, size uint32) IndexEntry {
+	return IndexEntry{uint(timestamp), uint(offset), uint(size)}
+}
+
+// NewChunkEntry creates a new chunk entry
+// NewChunkEntry creates a new chunk entry.
+func NewChunkEntry(offset uint64, bitmapSize, logSize uint32, actors map[uint32]IndexEntry) ChunkEntry {
+	return ChunkEntry{Offset: offset, BitmapSize: bitmapSize, LogSize: logSize, Actors: actors}
+}
+
+// BitmapOffset calculates the offset to the bitmap section within the merged file.
+func (e ChunkEntry) BitmapOffset() uint32 { return 0 }
+
+// LogOffset calculates the offset to the log section within the merged file.
+func (e ChunkEntry) LogOffset() uint32 { return e.BitmapSize }
+
+// TotalSize calculates the total size of the merged file.
+func (e ChunkEntry) TotalSize() uint32 { return e.BitmapSize + e.LogSize }

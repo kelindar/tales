@@ -45,7 +45,7 @@ func (l *Service) flushBuffer(ctx context.Context, buf *buffer.Buffer) error {
 	var bitmapOffset uint32
 	var bitmapSize uint32
 	for _, rbm := range res.Index {
-		actorMap[rbm.ActorID] = codec.NewIndexEntry(flushTime, uint64(bitmapOffset), rbm.CompressedSize, rbm.UncompressedSize)
+		actorMap[rbm.ActorID] = codec.NewIndexEntry(flushTime, uint64(bitmapOffset), rbm.CompressedSize)
 		bitmapOffset += rbm.CompressedSize
 		bitmapSize += rbm.CompressedSize
 	}

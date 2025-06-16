@@ -40,21 +40,19 @@ func TestLogEntry(t *testing.T) {
 
 func TestIndexEntry(t *testing.T) {
 	t.Run("CreateAndAccess", func(t *testing.T) {
-		entry := NewIndexEntry(1234567890, 9876543210, 1024, 2048)
+		entry := NewIndexEntry(1234567890, 9876543210, 1024)
 
-		assert.Equal(t, uint32(1234567890), entry.Time)
-		assert.Equal(t, uint64(9876543210), entry.Offset)
-		assert.Equal(t, uint32(1024), entry.Size)
-		assert.Equal(t, uint32(2048), entry.UncompressedSize)
+		assert.Equal(t, uint32(1234567890), uint32(entry[0]))
+		assert.Equal(t, uint64(9876543210), uint64(entry[1]))
+		assert.Equal(t, uint32(1024), uint32(entry[2]))
 	})
 
 	t.Run("ZeroValues", func(t *testing.T) {
-		entry := NewIndexEntry(0, 0, 0, 0)
+		entry := NewIndexEntry(0, 0, 0)
 
-		assert.Equal(t, uint32(0), entry.Time)
-		assert.Equal(t, uint64(0), entry.Offset)
-		assert.Equal(t, uint32(0), entry.Size)
-		assert.Equal(t, uint32(0), entry.UncompressedSize)
+		assert.Equal(t, uint32(0), uint32(entry[0]))
+		assert.Equal(t, uint64(0), uint64(entry[1]))
+		assert.Equal(t, uint32(0), uint32(entry[2]))
 	})
 }
 

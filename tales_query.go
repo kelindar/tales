@@ -48,8 +48,8 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 	}
 
 	// Pre-compute time range in minutes once per day
-	fromMin := uint32(from.Sub(day).Minutes())
-	toMin := uint32(to.Sub(day).Minutes())
+	t0 := uint32(from.Sub(day).Minutes())
+	t1 := uint32(to.Sub(day).Minutes())
 
 	// Build a quick membership map for actors
 	actorSet := make(map[uint32]struct{}, len(actors))
@@ -60,12 +60,10 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 	// For each chunk, load all relevant bitmaps and compute intersection
 	for _, chunk := range meta.Chunks {
 		chunkKey := keyOfChunk(seq.FormatDate(day), chunk.Offset)
-
-		// Process each actor directly, building intersection as we go
 		var index *sroar.Bitmap
 		for i, a := range actors {
 			idx, ok := chunk.Actors[a]
-			if !ok || idx.Time < fromMin || idx.Time > toMin {
+			if !ok || uint32(idx[0]) < t0 || uint32(idx[0]) > t1 {
 				index = nil
 				break
 			}
@@ -96,8 +94,8 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 
 // loadBitmap downloads and decodes a single bitmap for a given index entry.
 func (l *Service) loadBitmap(ctx context.Context, key string, entry codec.IndexEntry) (*sroar.Bitmap, error) {
-	i0 := int64(entry.Offset)
-	i1 := i0 + int64(entry.Size) - 1
+	i0 := int64(entry[1])
+	i1 := i0 + int64(entry[2]) - 1
 
 	data, err := l.s3Client.DownloadRange(ctx, key, i0, i1)
 	if err != nil {
@@ -134,15 +132,13 @@ func (l *Service) queryChunk(ctx context.Context, chunkKey string, chunk codec.C
 
 // rangeChunks downloads the log section from a chunk file, decompresses it, and returns an iterator over log entries.
 func (l *Service) rangeChunks(ctx context.Context, chunkKey string, chunk codec.ChunkEntry) (iter.Seq[codec.LogEntry], error) {
-	// Calculate log section offset and download only that section
-	logOffset := int64(chunk.LogOffset())
-	logSize := chunk.LogSize
-	if logSize == 0 {
+	if chunk.LogSize == 0 {
 		return func(yield func(codec.LogEntry) bool) {}, nil // Empty iterator
 	}
 
-	logEnd := logOffset + int64(logSize) - 1
-	compressed, err := l.s3Client.DownloadRange(ctx, chunkKey, logOffset, logEnd)
+	i0 := int64(chunk.LogOffset())
+	i1 := i0 + int64(chunk.LogSize) - 1
+	compressed, err := l.s3Client.DownloadRange(ctx, chunkKey, i0, i1)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download log section: %w", err)
 	}
