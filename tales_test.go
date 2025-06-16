@@ -119,7 +119,7 @@ func newService() (*Service, error) {
 		"us-east-1",
 		WithPrefix("test-prefix"),
 		WithInterval(1*time.Minute),
-		WithBufferSize(1024*1024),
+		WithBuffer(1024*1024),
 		WithClient(func(config s3.Config) (s3.Client, error) {
 			return s3.NewMockClient(mockS3, config)
 		}),

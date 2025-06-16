@@ -88,7 +88,7 @@ func New(bucket, region string, opts ...Option) (*Service, error) {
 		config:   cfg,
 		s3Client: s3Client,
 		codec:    codecInstance,
-		metaLRU:  cache.NewLRU[string, *codec.Metadata](cfg.MetadataCacheSize),
+		metaLRU:  cache.NewLRU[string, *codec.Metadata](cfg.CacheSize),
 		commands: make(chan command, cfg.BufferSize),
 		cancel:   cancel,
 	}
