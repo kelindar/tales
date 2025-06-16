@@ -54,7 +54,7 @@ type Service struct {
 // New creates a new logger using the provided S3 bucket and region. Optional
 // behaviour can be configured via Option functions.
 func New(bucket, region string, opts ...Option) (*Service, error) {
-	cfg := config{S3Config: s3.Config{Bucket: bucket, Region: region}}
+	cfg := config{S3: s3.Config{Bucket: bucket, Region: region}}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
@@ -74,9 +74,9 @@ func New(bucket, region string, opts ...Option) (*Service, error) {
 	// Create S3 client
 	var s3Client s3.Client
 	if cfg.NewClient != nil {
-		s3Client, err = cfg.NewClient(cfg.S3Config)
+		s3Client, err = cfg.NewClient(cfg.S3)
 	} else {
-		s3Client, err = s3.NewClient(cfg.S3Config)
+		s3Client, err = s3.NewClient(cfg.S3)
 	}
 	if err != nil {
 		codecInstance.Close()

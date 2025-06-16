@@ -14,10 +14,11 @@ import (
 
 // Config represents the S3-specific configuration.
 type Config struct {
-	Bucket  string // S3 bucket name (required)
-	Region  string // AWS region (required for mock)
-	Prefix  string // S3 key prefix (optional)
-	Retries int    // Unused but kept for compatibility
+	Bucket  string          // S3 bucket name (required)
+	Region  string          // AWS region (required for mock)
+	Prefix  string          // S3 key prefix (optional)
+	Service string          // S3 service (optional)
+	Key     *aws.SigningKey // Optional signing key
 }
 
 // Client interface abstracts S3 operations for easier testing and mocking
@@ -52,11 +53,21 @@ type S3Client struct {
 }
 
 // NewClient creates a new client using ambient credentials.
-func NewClient(cfg Config) (Client, error) {
-	key, err := aws.AmbientKey("s3", s3lib.DeriveForBucket(cfg.Bucket))
+func NewClient(cfg Config) (client Client, err error) {
+	var key *aws.SigningKey
+	switch {
+	case cfg.Key != nil:
+		key = cfg.Key
+	case cfg.Bucket != "":
+		key, err = aws.AmbientKey(cfg.Service, s3lib.DeriveForBucket(cfg.Bucket))
+	default:
+		err = fmt.Errorf("region or key is required")
+	}
+
 	if err != nil {
 		return nil, ErrS3Operation{Operation: "credentials", Err: err}
 	}
+
 	bucket := s3lib.NewBucket(key, cfg.Bucket)
 	bucket.Lazy = true
 	return &S3Client{bucket: bucket, key: key, bucketName: cfg.Bucket, prefix: cfg.Prefix}, nil
