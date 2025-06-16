@@ -63,8 +63,7 @@ func (c *config) setDefaults() {
 		c.S3Config.Retries = 3
 	}
 	if c.CacheSize == 0 {
-		const days = 7 * 24 * time.Hour
-		c.CacheSize = int(days / c.ChunkInterval)
+		c.CacheSize = 30 // days
 	}
 }
 

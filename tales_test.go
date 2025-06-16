@@ -11,7 +11,7 @@ import (
 )
 
 /*
-BenchmarkTales-24    	 5078926	       209.0 ns/op	   4806405 log/s	     160 B/op	       3 allocs/op
+BenchmarkTales-24    	 4510207	       226.9 ns/op	   4431203 log/s	     730 B/op	       3 allocs/op
 */
 func BenchmarkTales(b *testing.B) {
 	logger, err := newService()

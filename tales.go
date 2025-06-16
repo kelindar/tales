@@ -133,7 +133,6 @@ func (l *Service) Query(from, to time.Time, actors ...uint32) iter.Seq2[time.Tim
 			return
 		}
 
-		// Query both memory and history.
 		// Query history first, then memory, to ensure chronological order (past to now).
 		l.queryCold(context.Background(), actors, from, to, yield)
 		l.queryWarm(actors, from, to, yield)
@@ -166,7 +165,6 @@ func (l *Service) run(ctx context.Context) {
 
 	// Initialize sequence generator for the current day
 	seqGen := seq.NewSequence(time.Now().UTC())
-
 	for {
 		select {
 		case cmd, ok := <-l.commands:

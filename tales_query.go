@@ -42,9 +42,8 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 		return true
 	}
 
-	date := seq.FormatDate(day)
-
 	// Retrieve metadata from cache or S3
+	date := seq.FormatDate(day)
 	meta, ok := l.metaLRU.Get(date)
 	if !ok {
 		tidx := keyOfMetadata(date)
