@@ -36,13 +36,19 @@ func WithClient(fn func(s3.Config) (s3.Client, error)) Option {
 	return func(c *config) { c.NewClient = fn }
 }
 
+// WithMetadataCache sets the size of the metadata LRU cache.
+func WithMetadataCache(size int) Option {
+	return func(c *config) { c.MetadataCacheSize = size }
+}
+
 // config holds all configuration for the logger. It is kept private and
 // manipulated through Option helpers.
 type config struct {
-	S3Config      s3.Config
-	ChunkInterval time.Duration
-	BufferSize    int
-	NewClient     func(s3.Config) (s3.Client, error)
+	S3Config          s3.Config
+	ChunkInterval     time.Duration
+	BufferSize        int
+	NewClient         func(s3.Config) (s3.Client, error)
+	MetadataCacheSize int
 }
 
 // setDefaults applies default values to the configuration.
@@ -55,6 +61,10 @@ func (c *config) setDefaults() {
 	}
 	if c.S3Config.Retries == 0 {
 		c.S3Config.Retries = 3
+	}
+	if c.MetadataCacheSize == 0 {
+		const days = 7 * 24 * time.Hour
+		c.MetadataCacheSize = int(days / c.ChunkInterval)
 	}
 }
 
@@ -69,6 +79,8 @@ func (c *config) validate() error {
 		return fmt.Errorf("chunk interval must be at least 1 minute")
 	case c.BufferSize < 1:
 		return fmt.Errorf("buffer size must be at least 1")
+	case c.MetadataCacheSize < 0:
+		return fmt.Errorf("metadata cache size must be non-negative")
 	}
 	return nil
 }

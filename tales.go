@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kelindar/tales/internal/buffer"
+	"github.com/kelindar/tales/internal/cache"
 	"github.com/kelindar/tales/internal/codec"
 	"github.com/kelindar/tales/internal/s3"
 	"github.com/kelindar/tales/internal/seq"
@@ -43,6 +44,7 @@ type Service struct {
 	config   config
 	s3Client s3.Client
 	codec    *codec.Codec
+	metaLRU  *cache.LRU[string, *codec.Metadata]
 	commands chan command
 	wg       sync.WaitGroup
 	cancel   context.CancelFunc
@@ -86,6 +88,7 @@ func New(bucket, region string, opts ...Option) (*Service, error) {
 		config:   cfg,
 		s3Client: s3Client,
 		codec:    codecInstance,
+		metaLRU:  cache.NewLRU[string, *codec.Metadata](cfg.MetadataCacheSize),
 		commands: make(chan command, cfg.BufferSize),
 		cancel:   cancel,
 	}
