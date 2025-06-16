@@ -44,18 +44,19 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 
 	date := seq.FormatDate(day)
 
-	// Build S3 key for metadata
-	tidx := keyOfMetadata(date)
-
-	// Download metadata file
-	metaBytes, err := l.s3Client.Download(ctx, tidx)
-	if err != nil || len(metaBytes) == 0 {
-		return true
-	}
-
-	meta, err := codec.DecodeMetadata(metaBytes)
-	if err != nil || meta == nil {
-		return true
+	// Retrieve metadata from cache or S3
+	meta, ok := l.metaLRU.Get(date)
+	if !ok {
+		tidx := keyOfMetadata(date)
+		metaBytes, err := l.s3Client.Download(ctx, tidx)
+		if err != nil || len(metaBytes) == 0 {
+			return true
+		}
+		meta, err = codec.DecodeMetadata(metaBytes)
+		if err != nil || meta == nil {
+			return true
+		}
+		l.metaLRU.Add(date, meta)
 	}
 
 	// For each chunk, load all relevant bitmaps and compute intersection
