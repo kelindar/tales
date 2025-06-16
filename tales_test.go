@@ -11,9 +11,10 @@ import (
 )
 
 /*
-BenchmarkTales-24    	 4510207	       226.9 ns/op	   4431203 log/s	     730 B/op	       3 allocs/op
+cpu: 13th Gen Intel(R) Core(TM) i7-13700K
+BenchmarkLog-24    	 4461338	       228.8 ns/op	   4395903 tps	     831 B/op	       3 allocs/op
 */
-func BenchmarkTales(b *testing.B) {
+func BenchmarkLog(b *testing.B) {
 	logger, err := newService()
 	require.NoError(b, err)
 	defer logger.Close()
@@ -28,11 +29,42 @@ func BenchmarkTales(b *testing.B) {
 		}
 
 		logger.flush()
-		logger.Query(time.Now().Add(-1*time.Hour), time.Now().Add(1*time.Hour), 1)
 	}
 
 	b.N = count
-	b.ReportMetric(float64(count)/time.Now().Sub(start).Seconds(), "log/s")
+	b.ReportMetric(float64(count)/time.Now().Sub(start).Seconds(), "tps")
+}
+
+/*
+cpu: 13th Gen Intel(R) Core(TM) i7-13700K
+BenchmarkQuery-24    	      60	  28469333 ns/op	        57.43 qps	360792949 B/op	   58913 allocs/op
+*/
+func BenchmarkQuery(b *testing.B) {
+	logger, err := newService()
+	require.NoError(b, err)
+	defer logger.Close()
+
+	for chunk := 0; chunk < 100; chunk++ {
+		for i := 0; i < 1000; i++ {
+			logger.Log("hello world", uint32(i%100))
+		}
+		logger.flush()
+	}
+
+	count := 0
+	start := time.Now()
+	for time.Now().Sub(start) < time.Second {
+		const interval = 50 * time.Millisecond
+		for i := time.Now(); time.Now().Sub(i) < interval; {
+			for range logger.Query(time.Now().Add(-1*time.Hour), time.Now().Add(1*time.Hour), 1) {
+				// Consume the iterator
+			}
+			count++
+		}
+	}
+
+	b.N = count
+	b.ReportMetric(float64(count)/time.Now().Sub(start).Seconds(), "qps")
 }
 
 func TestIntegration(t *testing.T) {
