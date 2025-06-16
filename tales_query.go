@@ -1,10 +1,10 @@
 package tales
 
 import (
-       "context"
-       "fmt"
-       "iter"
-       "time"
+	"context"
+	"fmt"
+	"iter"
+	"time"
 
 	"github.com/RoaringBitmap/roaring/v2"
 	"github.com/kelindar/tales/internal/codec"
@@ -47,49 +47,49 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 		return true
 	}
 
-       // Pre-compute time range in minutes once per day
-       fromMin := uint32(from.Sub(day).Minutes())
-       toMin := uint32(to.Sub(day).Minutes())
+	// Pre-compute time range in minutes once per day
+	fromMin := uint32(from.Sub(day).Minutes())
+	toMin := uint32(to.Sub(day).Minutes())
 
-       // Build a quick membership map for actors
-       actorSet := make(map[uint32]struct{}, len(actors))
-       for _, a := range actors {
-               actorSet[a] = struct{}{}
-       }
+	// Build a quick membership map for actors
+	actorSet := make(map[uint32]struct{}, len(actors))
+	for _, a := range actors {
+		actorSet[a] = struct{}{}
+	}
 
-       // For each chunk, load all relevant bitmaps and compute intersection
-       for _, chunk := range meta.Chunks {
-		if chunk.IndexSize() == 0 {
-			continue // Skip empty chunks
+	// For each chunk, load all relevant bitmaps and compute intersection
+	for _, chunk := range meta.Chunks {
+		chunkKey := keyOfChunk(seq.FormatDate(day), chunk.Offset)
+
+		// Collect bitmap entries for requested actors
+		entries := make([]codec.IndexEntry, 0, len(actors))
+		for _, a := range actors {
+			idx, ok := chunk.Actors[a]
+			if !ok {
+				entries = nil
+				break
+			}
+			if idx.Time < fromMin || idx.Time > toMin {
+				entries = nil
+				break
+			}
+			entries = append(entries, idx)
 		}
-
-		// Load all index entries and filter by actors and time range
-		chunkKey := keyOfChunk(seq.FormatDate(day), chunk.Offset())
-               entries, err := l.loadIndex(ctx, chunkKey, chunk, func(entry codec.IndexEntry) bool {
-                       if _, ok := actorSet[entry.Actor()]; !ok {
-                               return false
-                       }
-                       return filterEntry(entry, entry.Actor(), fromMin, toMin)
-               })
-		if err != nil {
+		if len(entries) != len(actors) {
 			continue
 		}
 
 		// Process each entry once, building intersection directly
-               var index *roaring.Bitmap
-               for entry := range entries {
-                       if _, ok := actorSet[entry.Actor()]; !ok {
-                               continue // Skip entries that don't match any actor
-                       }
-
-			// Load this specific bitmap
-			bitmap, err := l.loadBitmap(ctx, chunkKey, chunk, entry)
-			switch {
-			case err != nil:
-				continue
-			case index == nil:
+		var index *roaring.Bitmap
+		for _, entry := range entries {
+			bitmap, err := l.loadBitmap(ctx, chunkKey, entry)
+			if err != nil {
+				index = nil
+				break
+			}
+			if index == nil {
 				index = bitmap.Clone()
-			default:
+			} else {
 				index.And(bitmap)
 			}
 		}
@@ -105,37 +105,10 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 	return true
 }
 
-// loadIndex downloads and parses the index section from a chunk file, yielding filtered entries.
-func (l *Service) loadIndex(ctx context.Context, key string, chunk codec.ChunkEntry, filter func(codec.IndexEntry) bool) (iter.Seq[codec.IndexEntry], error) {
-	data, err := l.s3Client.DownloadRange(ctx, key, 0, int64(chunk.IndexSize()-1))
-	if err != nil {
-		return nil, err
-	}
-
-	if len(data)%codec.IndexEntrySize != 0 {
-		return nil, fmt.Errorf("invalid index section size")
-	}
-
-	return func(yield func(codec.IndexEntry) bool) {
-		for i := 0; i < len(data); i += codec.IndexEntrySize {
-			entry := codec.IndexEntry(data[i : i+codec.IndexEntrySize])
-			if filter(entry) && !yield(entry) {
-				return // Stop iteration if yield returns false
-			}
-		}
-	}, nil
-}
-
-// filterEntry filters a single index entry by actor and time range.
-func filterEntry(entry codec.IndexEntry, actor uint32, fromMin, toMin uint32) bool {
-        return entry.Actor() == actor && entry.Time() >= fromMin && entry.Time() <= toMin
-}
-
 // loadBitmap downloads and decodes a single bitmap for a given index entry.
-func (l *Service) loadBitmap(ctx context.Context, key string, chunk codec.ChunkEntry, entry codec.IndexEntry) (*roaring.Bitmap, error) {
-	offset := int64(chunk.BitmapOffset())
-	i0 := offset + int64(entry.Offset())
-	i1 := i0 + int64(entry.CompressedSize()) - 1
+func (l *Service) loadBitmap(ctx context.Context, key string, entry codec.IndexEntry) (*roaring.Bitmap, error) {
+	i0 := int64(entry.Offset)
+	i1 := i0 + int64(entry.Size) - 1
 
 	compressed, err := l.s3Client.DownloadRange(ctx, key, i0, i1)
 	if err != nil {
@@ -183,7 +156,7 @@ func (l *Service) queryChunk(ctx context.Context, chunkKey string, chunk codec.C
 func (l *Service) rangeChunks(ctx context.Context, chunkKey string, chunk codec.ChunkEntry) (iter.Seq[codec.LogEntry], error) {
 	// Calculate log section offset and download only that section
 	logOffset := int64(chunk.LogOffset())
-	logSize := chunk.LogSize()
+	logSize := chunk.LogSize
 	if logSize == 0 {
 		return func(yield func(codec.LogEntry) bool) {}, nil // Empty iterator
 	}

@@ -34,8 +34,8 @@ func DecodeMetadata(data []byte) (*Metadata, error) {
 }
 
 // Append adds a new chunk with section sizes.
-func (m *Metadata) Append(offset uint64, indexSize, bitmapSize, logSize uint32) *Metadata {
-	newChunk := NewChunkEntry(offset, indexSize, bitmapSize, logSize)
+func (m *Metadata) Append(offset uint64, bitmapSize, logSize uint32, actors map[uint32]IndexEntry) *Metadata {
+	newChunk := NewChunkEntry(offset, bitmapSize, logSize, actors)
 	m.Chunks = append(m.Chunks, newChunk)
 	m.Length = uint32(len(m.Chunks))
 	return m

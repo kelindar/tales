@@ -34,38 +34,33 @@ func (l *Service) flushBuffer(ctx context.Context, buf *buffer.Buffer) error {
 		return fmt.Errorf("failed to download metadata: %w", err)
 	}
 
-	// Create merged file with index + bitmap + log sections
+	// Create merged file with bitmap + log sections
 	date := seq.FormatDate(now)
 	flushTime := uint32(now.Sub(seq.DayOf(now)).Minutes())
 	chunkNumber := uint64(meta.Length)
 	chunkKey := keyOfChunk(date, chunkNumber)
 
-	// Build index entries without intermediate allocations
-	indexEntries := make([]codec.IndexEntry, 0, len(res.Index))
+	// Build metadata for actor bitmaps
+	actorMap := make(map[uint32]codec.IndexEntry, len(res.Index))
 	var bitmapOffset uint32
+	var bitmapSize uint32
 	for _, rbm := range res.Index {
-		indexEntry := codec.NewIndexEntry(flushTime, rbm.ActorID, uint64(bitmapOffset), rbm.CompressedSize, rbm.UncompressedSize)
-		indexEntries = append(indexEntries, indexEntry)
+		actorMap[rbm.ActorID] = codec.NewIndexEntry(flushTime, uint64(bitmapOffset), rbm.CompressedSize, rbm.UncompressedSize)
 		bitmapOffset += rbm.CompressedSize
+		bitmapSize += rbm.CompressedSize
 	}
 
-	// Calculate section sizes for metadata
-	indexSize := uint32(len(indexEntries) * codec.IndexEntrySize)
-	var bitmapSize uint32
-	for _, bm := range res.Index {
-		bitmapSize += bm.CompressedSize
-	}
 	logSize := res.Data.CompressedSize
 
 	// Upload merged file using streaming upload
-	reader := newLogReader(indexEntries, res.Index, res.Data.CompressedData)
+	reader := newLogReader(res.Index, res.Data.CompressedData)
 	if err := l.s3Client.UploadReader(ctx, chunkKey, reader, reader.Size()); err != nil {
 		return fmt.Errorf("failed to upload merged chunk: %w", err)
 	}
 
 	// Append a new chunk entry to the metadata and encode it
 	encodedMeta, err := codec.EncodeMetadata(
-		meta.Append(chunkNumber, indexSize, bitmapSize, logSize),
+		meta.Append(chunkNumber, bitmapSize, logSize, actorMap),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to encode metadata: %w", err)
@@ -104,13 +99,8 @@ func (l *Service) downloadMetadata(ctx context.Context, now time.Time) (meta *co
 
 // newLogReader creates a streaming reader for chunk data without intermediate allocations.
 // It builds a MultiReaderAt from index entries, bitmaps, and log data.
-func newLogReader(indexEntries []codec.IndexEntry, bitmaps []buffer.Index, logData []byte) *s3.MultiReader {
-	sections := make([][]byte, 0, len(indexEntries)+len(bitmaps)+1)
-
-	// Add index entries (no copying, just references)
-	for _, entry := range indexEntries {
-		sections = append(sections, []byte(entry))
-	}
+func newLogReader(bitmaps []buffer.Index, logData []byte) *s3.MultiReader {
+	sections := make([][]byte, 0, len(bitmaps)+1)
 
 	// Add bitmap data (no copying, just references)
 	for _, bm := range bitmaps {
