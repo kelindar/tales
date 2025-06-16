@@ -3,6 +3,7 @@ package codec
 import (
 	"encoding/binary"
 	"time"
+	"unsafe"
 
 	"github.com/kelindar/tales/internal/seq"
 )
@@ -72,19 +73,14 @@ func (e LogEntry) Text() string {
 		return ""
 	}
 
-	// Read text length (uint16)
-	textLen := binary.LittleEndian.Uint16(e[4:6])
-
 	// Text starts after sequence ID (4) + text length (2) + actor count (2)
-	textStart := 8
-	textEnd := textStart + int(textLen)
-
-	// Check bounds
-	if textEnd > len(e) {
+	i0 := 8
+	i1 := i0 + int(binary.LittleEndian.Uint16(e[4:6]))
+	if i1 > len(e) {
 		return ""
 	}
 
-	return string(e[textStart:textEnd])
+	return unsafe.String(unsafe.SliceData(e[i0:i1]), i1-i0)
 }
 
 // Actors extracts the actor IDs from a log entry

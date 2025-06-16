@@ -37,10 +37,7 @@ func BenchmarkLog(b *testing.B) {
 
 /*
 cpu: 13th Gen Intel(R) Core(TM) i7-13700K
-BenchmarkQuery-24    	      60	  28469333 ns/op	        57.43 qps	360792949 B/op	   58913 allocs/op
-BenchmarkQuery-24    	      90	  20760861 ns/op	        85.35 qps	245520819 B/op	   51301 allocs/op
-BenchmarkQuery-24    	      87	  21869603 ns/op	        82.01 qps	254084375 B/op	   50216 allocs/op
-BenchmarkQuery-24    	      89	  20512825 ns/op	        84.93 qps	258275845 B/op	   49356 allocs/op
+BenchmarkQuery-24    	      90	  11189897 ns/op	        89.39 qps	 5660155 B/op	   32406 allocs/op
 */
 func BenchmarkQuery(b *testing.B) {
 	logger, err := newService()
@@ -54,6 +51,7 @@ func BenchmarkQuery(b *testing.B) {
 		logger.flush()
 	}
 
+	b.ResetTimer()
 	count := 0
 	start := time.Now()
 	for time.Now().Sub(start) < time.Second {
