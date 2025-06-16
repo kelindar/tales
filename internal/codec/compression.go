@@ -47,6 +47,15 @@ func (c *Codec) Decompress(compressed []byte) ([]byte, error) {
 	return decompressed, nil
 }
 
+// DecompressInto decompresses data into the provided buffer, reusing it when possible.
+func (c *Codec) DecompressInto(compressed, dst []byte) ([]byte, error) {
+	decompressed, err := c.decoder.DecodeAll(compressed, dst[:0])
+	if err != nil {
+		return nil, &CompressionError{Operation: "decompress", Err: err}
+	}
+	return decompressed, nil
+}
+
 // Close closes the encoder and decoder.
 func (c *Codec) Close() {
 	if c.encoder != nil {
