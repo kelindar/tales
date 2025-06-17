@@ -1,4 +1,6 @@
 <p align="center">
+  <img width="300" height="110" src=".github/logo.png" border="0" alt="kelindar/tales">
+  <br>
   <img src="https://img.shields.io/github/go-mod/go-version/kelindar/tales" alt="Go Version">
   <a href="https://pkg.go.dev/github.com/kelindar/tales"><img src="https://pkg.go.dev/badge/github.com/kelindar/tales" alt="PkgGoDev"></a>
   <a href="https://goreportcard.com/report/github.com/kelindar/tales"><img src="https://goreportcard.com/badge/github.com/kelindar/tales" alt="Go Report Card"></a>
