@@ -4,11 +4,14 @@
 package tales
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	s3mock "github.com/kelindar/s3/mock"
+	"github.com/kelindar/tales/internal/codec"
 	"github.com/kelindar/tales/internal/s3"
+	"github.com/kelindar/tales/internal/seq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -144,6 +147,38 @@ func TestBuildKeys(t *testing.T) {
 	// Test chunk key
 	chunk := uint64(5)
 	assert.Equal(t, "2023-01-02/5.log", keyOfChunk("2023-01-02", chunk))
+}
+
+func TestCloseFlushes(t *testing.T) {
+	logger, err := newService()
+	require.NoError(t, err)
+
+	// Log an event but do not flush manually
+	logger.Log("pending event", 1)
+
+	// Close should flush the buffered event
+	err = logger.Close()
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	date := seq.FormatDate(time.Now())
+
+	// Metadata should exist
+	exists, err := logger.s3Client.ObjectExists(ctx, keyOfMetadata(date))
+	require.NoError(t, err)
+	assert.True(t, exists)
+
+	// Metadata should describe at least one chunk and the chunk file must exist
+	buf, err := logger.s3Client.Download(ctx, keyOfMetadata(date))
+	require.NoError(t, err)
+	meta, err := codec.DecodeMetadata(buf)
+	require.NoError(t, err)
+	if assert.Greater(t, meta.Length, uint32(0)) {
+		chunkKey := keyOfChunk(date, 0)
+		exists, err = logger.s3Client.ObjectExists(ctx, chunkKey)
+		require.NoError(t, err)
+		assert.True(t, exists)
+	}
 }
 
 func newService() (*Service, error) {
