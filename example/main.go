@@ -80,7 +80,7 @@ func runSimulation(logger *tales.Service, duration time.Duration) {
 	defer cancel()
 
 	// Generate conversations every 8-30 seconds
-	ticker := time.NewTicker(time.Duration(1+rand.Intn(5)) * time.Second)
+	ticker := time.NewTicker(time.Duration(1+rand.Intn(2)) * time.Second)
 	defer ticker.Stop()
 
 	count := 0
@@ -92,7 +92,7 @@ func runSimulation(logger *tales.Service, duration time.Duration) {
 		case <-ticker.C:
 			simulateConversation(logger, texts)
 			count++
-			ticker.Reset(time.Duration(1+rand.Intn(5)) * time.Second)
+			ticker.Reset(time.Duration(1+rand.Intn(2)) * time.Second)
 		}
 	}
 }
@@ -102,7 +102,7 @@ func demoQueries(logger *tales.Service) {
 	time.Sleep(2 * time.Second) // Let logs process
 
 	now := time.Now()
-	from := now.Add(-1 * time.Hour)
+	from := now.Add(-12 * time.Hour)
 
 	// Show conversations for first actor
 	actor := actors[0]
@@ -111,9 +111,6 @@ func demoQueries(logger *tales.Service) {
 	for timestamp, text := range logger.Query(from, now, actor.id) {
 		log.Printf("  [%s] %s", timestamp.Format("15:04:05"), text)
 		count++
-		if count >= 3 {
-			break
-		}
 	}
 	if count == 0 {
 		log.Printf("  No conversations found")
@@ -129,7 +126,7 @@ func main() {
 	defer logger.Close()
 
 	// Run simulation
-	runSimulation(logger, 10*time.Minute)
+	//runSimulation(logger, 60*time.Minute)
 	demoQueries(logger)
 	log.Println("\n=== Complete ===")
 }
