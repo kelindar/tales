@@ -14,32 +14,21 @@ type LogEntry []byte
 
 // NewLogEntry creates a new log entry from components
 func NewLogEntry(sequenceID uint32, text string, actors []uint32) (LogEntry, error) {
-	// Pre-allocate with exact size
-	size := 4 + // sequence ID
-		2 + // text length (uint16)
-		2 + // actor count (uint16)
-		len(text) + // text bytes
-		len(actors)*4 // actor IDs (4 bytes each)
+	actlen := len(actors) * 4
+	strlen := len(text)
+	length := 4 + 2 + 2 + actlen + strlen // sequenceID + size + cutoff + actors + text
+	cutoff := 8 + actlen                  // offset where text starts (after sequenceID + size + midpoint + actors)
 
-	buf := make([]byte, 0, size)
-
-	// Write sequence ID (4 bytes)
+	buf := make([]byte, 0, length)
 	buf = binary.LittleEndian.AppendUint32(buf, sequenceID)
+	buf = binary.LittleEndian.AppendUint16(buf, uint16(length))
+	buf = binary.LittleEndian.AppendUint16(buf, uint16(cutoff))
 
-	// Write text length (uint16)
-	buf = binary.LittleEndian.AppendUint16(buf, uint16(len(text)))
-
-	// Write actor count (uint16)
-	buf = binary.LittleEndian.AppendUint16(buf, uint16(len(actors)))
-
-	// Write text (UTF-8)
-	buf = append(buf, text...)
-
-	// Write actor IDs (4 bytes each)
 	for _, actor := range actors {
 		buf = binary.LittleEndian.AppendUint32(buf, actor)
 	}
 
+	buf = append(buf, text...)
 	return LogEntry(buf), nil
 }
 
@@ -52,12 +41,10 @@ func (e LogEntry) Time(dayStart time.Time) time.Time {
 // ID extracts the sequence ID from a log entry
 // Size returns the total size of the log entry in bytes.
 func (e LogEntry) Size() uint32 {
-	if len(e) < 8 {
+	if len(e) < 6 {
 		return 0
 	}
-	textLen := binary.LittleEndian.Uint16(e[4:6])
-	actorCount := binary.LittleEndian.Uint16(e[6:8])
-	return 8 + uint32(textLen) + uint32(actorCount)*4
+	return uint32(binary.LittleEndian.Uint16(e[4:6]))
 }
 
 // ID extracts the sequence ID from a log entry
@@ -70,47 +57,53 @@ func (e LogEntry) ID() uint32 {
 
 // Text extracts the text from a log entry
 func (e LogEntry) Text() string {
-	if len(e) < 8 { // 4 bytes sequence ID + 2 bytes text length + 2 bytes actor count
+	if len(e) < 8 { // 4 bytes sequence ID + 2 bytes size + 2 bytes midpoint
 		return ""
 	}
 
-	// Text starts after sequence ID (4) + text length (2) + actor count (2)
-	i0 := 8
-	i1 := i0 + int(binary.LittleEndian.Uint16(e[4:6]))
-	if i1 > len(e) {
+	size := binary.LittleEndian.Uint16(e[4:6])
+	midpoint := binary.LittleEndian.Uint16(e[6:8])
+
+	// Validate bounds
+	if int(size) > len(e) || int(midpoint) > len(e) || midpoint > size {
 		return ""
 	}
 
-	return unsafe.String(unsafe.SliceData(e[i0:i1]), i1-i0)
+	textStart := int(midpoint)
+	textEnd := int(size)
+
+	if textStart >= textEnd {
+		return ""
+	}
+
+	return unsafe.String(unsafe.SliceData(e[textStart:textEnd]), textEnd-textStart)
 }
 
 // Actors extracts the actor IDs from a log entry as an iterator
 func (e LogEntry) Actors() iter.Seq[uint32] {
+	const from = 8
 	return func(yield func(uint32) bool) {
-		if len(e) < 8 { // 4 bytes sequence ID + 2 bytes text length + 2 bytes actor count
+		if len(e) < 8 { // 4 bytes sequence ID + 2 bytes size + 2 bytes midpoint
 			return
 		}
 
-		// Read text length and actor count (uint16 each)
-		textLen := binary.LittleEndian.Uint16(e[4:6])
-		actorCount := binary.LittleEndian.Uint16(e[6:8])
+		// Validate bounds
+		cutoff := binary.LittleEndian.Uint16(e[6:8])
+		if int(cutoff) > len(e) || cutoff < 8 {
+			return
+		}
 
-		// Actors start after sequence ID (4) + text length (2) + actor count (2) + text
-		actorsStart := 8 + int(textLen)
-		actorsEnd := actorsStart + int(actorCount)*4
-
-		// Check bounds
-		if actorsEnd > len(e) {
+		// Must be aligned to 4-byte boundaries
+		until := int(cutoff)
+		if (until-from)%4 != 0 {
 			return
 		}
 
 		// Yield actor IDs (4 bytes each)
-		pos := actorsStart
-		for i := uint16(0); i < actorCount; i++ {
+		for pos := from; pos < until; pos += 4 {
 			if !yield(binary.LittleEndian.Uint32(e[pos : pos+4])) {
 				return
 			}
-			pos += 4
 		}
 	}
 }
