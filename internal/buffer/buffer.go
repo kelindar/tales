@@ -58,18 +58,14 @@ func (b *Buffer) Add(entry codec.LogEntry, entryTime time.Time) bool {
 		b.time[1] = max(b.time[1], timestamp)
 	}
 
-	// Get sequence ID and actors using accessors
-	sequenceID := entry.ID()
-	actors := entry.Actors()
-
 	// Update actor bitmaps
-	for _, actorID := range actors {
+	for actorID := range entry.Actors() {
 		bitmap, ok := b.index[actorID]
 		if !ok || bitmap == nil {
 			bitmap = sroar.NewBitmap()
 			b.index[actorID] = bitmap
 		}
-		bitmap.Set(uint64(sequenceID))
+		bitmap.Set(uint64(entry.ID()))
 	}
 
 	return true
@@ -113,9 +109,19 @@ func (b *Buffer) QueryActors(dayStart time.Time, from, to time.Time, actors []ui
 }
 
 // containsAllActors checks if entryActors contains all required actors.
-func containsAllActors(entryActors, requiredActors []uint32) bool {
+func containsAllActors(entryActors iter.Seq[uint32], requiredActors []uint32) bool {
+	if len(requiredActors) == 0 {
+		return false
+	}
+
+	// Convert iterator to slice for efficient searching
+	var actorSlice []uint32
+	for actor := range entryActors {
+		actorSlice = append(actorSlice, actor)
+	}
+
 	for _, required := range requiredActors {
-		if !slices.Contains(entryActors, required) {
+		if !slices.Contains(actorSlice, required) {
 			return false
 		}
 	}

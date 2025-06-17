@@ -2,6 +2,7 @@ package codec
 
 import (
 	"encoding/binary"
+	"iter"
 	"time"
 	"unsafe"
 
@@ -83,32 +84,33 @@ func (e LogEntry) Text() string {
 	return unsafe.String(unsafe.SliceData(e[i0:i1]), i1-i0)
 }
 
-// Actors extracts the actor IDs from a log entry
-func (e LogEntry) Actors() []uint32 {
-	if len(e) < 8 { // 4 bytes sequence ID + 2 bytes text length + 2 bytes actor count
-		return nil
+// Actors extracts the actor IDs from a log entry as an iterator
+func (e LogEntry) Actors() iter.Seq[uint32] {
+	return func(yield func(uint32) bool) {
+		if len(e) < 8 { // 4 bytes sequence ID + 2 bytes text length + 2 bytes actor count
+			return
+		}
+
+		// Read text length and actor count (uint16 each)
+		textLen := binary.LittleEndian.Uint16(e[4:6])
+		actorCount := binary.LittleEndian.Uint16(e[6:8])
+
+		// Actors start after sequence ID (4) + text length (2) + actor count (2) + text
+		actorsStart := 8 + int(textLen)
+		actorsEnd := actorsStart + int(actorCount)*4
+
+		// Check bounds
+		if actorsEnd > len(e) {
+			return
+		}
+
+		// Yield actor IDs (4 bytes each)
+		pos := actorsStart
+		for i := uint16(0); i < actorCount; i++ {
+			if !yield(binary.LittleEndian.Uint32(e[pos : pos+4])) {
+				return
+			}
+			pos += 4
+		}
 	}
-
-	// Read text length and actor count (uint16 each)
-	textLen := binary.LittleEndian.Uint16(e[4:6])
-	actorCount := binary.LittleEndian.Uint16(e[6:8])
-
-	// Actors start after sequence ID (4) + text length (2) + actor count (2) + text
-	actorsStart := 8 + int(textLen)
-	actorsEnd := actorsStart + int(actorCount)*4
-
-	// Check bounds
-	if actorsEnd > len(e) {
-		return nil
-	}
-
-	// Read actor IDs (4 bytes each)
-	actors := make([]uint32, actorCount)
-	pos := actorsStart
-	for i := uint16(0); i < actorCount; i++ {
-		actors[i] = binary.LittleEndian.Uint32(e[pos : pos+4])
-		pos += 4
-	}
-
-	return actors
 }

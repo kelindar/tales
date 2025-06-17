@@ -12,7 +12,7 @@ import (
 
 /*
 cpu: 13th Gen Intel(R) Core(TM) i7-13700K
-BenchmarkLog-24    	 4461338	       228.8 ns/op	   4395903 tps	     831 B/op	       3 allocs/op
+BenchmarkLog-24    	 4557070	       228.2 ns/op	   4403361 tps	     869 B/op	       2 allocs/op
 */
 func BenchmarkLog(b *testing.B) {
 	logger, err := newService()

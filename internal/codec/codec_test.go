@@ -16,7 +16,13 @@ func TestLogEntry(t *testing.T) {
 		// Test accessors
 		assert.Equal(t, uint32(12345), entry.ID())
 		assert.Equal(t, "Hello, world!", entry.Text())
-		assert.Equal(t, []uint32{100, 200, 300}, entry.Actors())
+
+		// Collect actors from iterator
+		var actors []uint32
+		for actor := range entry.Actors() {
+			actors = append(actors, actor)
+		}
+		assert.Equal(t, []uint32{100, 200, 300}, actors)
 	})
 
 	t.Run("EmptyActors", func(t *testing.T) {
@@ -25,7 +31,13 @@ func TestLogEntry(t *testing.T) {
 
 		assert.Equal(t, uint32(999), entry.ID())
 		assert.Equal(t, "No actors", entry.Text())
-		assert.Empty(t, entry.Actors())
+
+		// Check that no actors are yielded
+		count := 0
+		for range entry.Actors() {
+			count++
+		}
+		assert.Equal(t, 0, count)
 	})
 
 	t.Run("UnicodeText", func(t *testing.T) {
@@ -34,7 +46,13 @@ func TestLogEntry(t *testing.T) {
 
 		assert.Equal(t, uint32(555), entry.ID())
 		assert.Equal(t, "Hello 世界! 🌍", entry.Text())
-		assert.Equal(t, []uint32{42}, entry.Actors())
+
+		// Collect actors from iterator
+		var actors []uint32
+		for actor := range entry.Actors() {
+			actors = append(actors, actor)
+		}
+		assert.Equal(t, []uint32{42}, actors)
 	})
 }
 
@@ -86,7 +104,13 @@ func TestEdgeCases(t *testing.T) {
 
 		assert.Equal(t, uint32(0), shortEntry.ID())
 		assert.Equal(t, "", shortEntry.Text())
-		assert.Nil(t, shortEntry.Actors())
+
+		// Check that no actors are yielded for invalid entry
+		count := 0
+		for range shortEntry.Actors() {
+			count++
+		}
+		assert.Equal(t, 0, count)
 	})
 
 }
