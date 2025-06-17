@@ -158,7 +158,7 @@ func (b *Buffer) Flush() (Flush, error) {
 	}
 
 	// Compress bitmaps
-	compressedBitmaps := make([]Index, 0, len(b.index))
+	index := make([]Index, 0, len(b.index))
 	for actorID, bm := range b.index {
 		if bm == nil {
 			continue
@@ -166,7 +166,7 @@ func (b *Buffer) Flush() (Flush, error) {
 		bitmapData := bm.ToBuffer()
 
 		// Do not compress bitmap, just store raw bytes
-		compressedBitmaps = append(compressedBitmaps, Index{
+		index = append(index, Index{
 			ActorID: actorID,
 			Binary: Binary{
 				UncompressedSize: uint32(len(bitmapData)),
@@ -177,16 +177,16 @@ func (b *Buffer) Flush() (Flush, error) {
 	}
 
 	// Capture time bounds before reset
-	minTime, maxTime := b.time[0], b.time[1]
+	dt := b.time
 	if b.length == 0 {
 		now := uint32(time.Now().Unix())
-		minTime, maxTime = now, now
+		dt = [2]uint32{now, now}
 	}
 
 	// Reset buffer state
 	b.reset()
 
-	return Flush{Data: dataCopy, Index: compressedBitmaps, Time: [2]uint32{minTime, maxTime}}, nil
+	return Flush{Data: dataCopy, Index: index, Time: dt}, nil
 }
 
 // reset resets the buffer's internal state.
