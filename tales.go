@@ -148,6 +148,9 @@ func (l *Service) Close() error {
 		return fmt.Errorf("logger already closed")
 	}
 
+	// Flush pending events before shutting down
+	l.flush()
+
 	// Signal the run loop to exit and wait for it to finish
 	close(l.commands)
 	l.wg.Wait()
