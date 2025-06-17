@@ -17,6 +17,7 @@ type Buffer struct {
 	length  int                      // Number of entries in buffer
 	maxSize int                      // Maximum number of entries
 	start   time.Time                // Start time of the buffer
+	time    [2]uint32                // Time bounds [min, max] (Unix seconds)
 }
 
 // New creates a new buffer with the specified maximum size.
@@ -37,7 +38,7 @@ func (b *Buffer) Size() int {
 }
 
 // Add adds a log entry to the buffer and updates actor bitmaps.
-func (b *Buffer) Add(entry codec.LogEntry) bool {
+func (b *Buffer) Add(entry codec.LogEntry, entryTime time.Time) bool {
 	// Check if buffer is full
 	if b.length >= b.maxSize {
 		return false
@@ -46,6 +47,16 @@ func (b *Buffer) Add(entry codec.LogEntry) bool {
 	// Add entry to buffer data
 	b.data = append(b.data, entry...)
 	b.length++
+
+	// Update time bounds
+	timestamp := uint32(entryTime.Unix())
+	if b.length == 1 {
+		b.time[0] = timestamp
+		b.time[1] = timestamp
+	} else {
+		b.time[0] = min(b.time[0], timestamp)
+		b.time[1] = max(b.time[1], timestamp)
+	}
 
 	// Get sequence ID and actors using accessors
 	sequenceID := entry.ID()
@@ -128,6 +139,7 @@ type Index struct {
 type Flush struct {
 	Data  Binary
 	Index []Index
+	Time  [2]uint32 // Time bounds [min, max] (Unix seconds)
 }
 
 // Flush atomically extracts the current buffer contents and resets the buffer.
@@ -164,16 +176,25 @@ func (b *Buffer) Flush() (Flush, error) {
 		})
 	}
 
+	// Capture time bounds before reset
+	minTime, maxTime := b.time[0], b.time[1]
+	if b.length == 0 {
+		now := uint32(time.Now().Unix())
+		minTime, maxTime = now, now
+	}
+
 	// Reset buffer state
 	b.reset()
 
-	return Flush{Data: dataCopy, Index: compressedBitmaps}, nil
+	return Flush{Data: dataCopy, Index: compressedBitmaps, Time: [2]uint32{minTime, maxTime}}, nil
 }
 
 // reset resets the buffer's internal state.
 func (b *Buffer) reset() {
 	b.data = b.data[:0]
 	b.length = 0
+	b.time[0] = 0
+	b.time[1] = 0
 	for k := range b.index {
 		b.index[k] = sroar.NewBitmap()
 	}

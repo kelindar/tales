@@ -11,6 +11,7 @@ type IndexEntry [3]uint
 // ChunkEntry represents a chunk entry stored in metadata.
 type ChunkEntry struct {
 	Location [3]uint               `json:"loc"`
+	Time     [2]uint               `json:"time"`
 	Actors   map[uint32]IndexEntry `json:"act,omitempty"`
 }
 
@@ -43,8 +44,8 @@ func DecodeMetadata(data []byte) (*Metadata, error) {
 }
 
 // Append adds a new chunk with section sizes.
-func (m *Metadata) Append(offset uint64, bitmapSize, logSize uint32, actors map[uint32]IndexEntry) *Metadata {
-	newChunk := NewChunkEntry(offset, bitmapSize, logSize, actors)
+func (m *Metadata) Append(offset uint64, bitmapSize, logSize uint32, startTime, endTime uint32, actors map[uint32]IndexEntry) *Metadata {
+	newChunk := NewChunkEntry(offset, bitmapSize, logSize, startTime, endTime, actors)
 	m.Chunks = append(m.Chunks, newChunk)
 	m.Length = uint32(len(m.Chunks))
 	return m
@@ -56,8 +57,12 @@ func NewIndexEntry(timestamp uint32, offset uint64, size uint32) IndexEntry {
 }
 
 // NewChunkEntry creates a new chunk entry.
-func NewChunkEntry(offset uint64, bitmapSize, logSize uint32, actors map[uint32]IndexEntry) ChunkEntry {
-	return ChunkEntry{Location: [3]uint{uint(offset), uint(bitmapSize), uint(logSize)}, Actors: actors}
+func NewChunkEntry(offset uint64, bitmapSize, logSize uint32, startTime, endTime uint32, actors map[uint32]IndexEntry) ChunkEntry {
+	return ChunkEntry{
+		Location: [3]uint{uint(offset), uint(bitmapSize), uint(logSize)},
+		Time:     [2]uint{uint(startTime), uint(endTime)},
+		Actors:   actors,
+	}
 }
 
 // Offset returns the chunk offset.
@@ -70,16 +75,27 @@ func (e ChunkEntry) BitmapSize() uint32 {
 	return uint32(e.Location[1])
 }
 
-// LogSize returns the log size.
-func (e ChunkEntry) LogSize() uint32 {
+// DataSize returns the log size.
+func (e ChunkEntry) DataSize() uint32 {
 	return uint32(e.Location[2])
 }
 
-// BitmapOffset calculates the offset to the bitmap section within the merged file.
-func (e ChunkEntry) BitmapOffset() uint32 { return 0 }
+// BitmapAt calculates the offset to the bitmap section within the merged file.
+func (e ChunkEntry) BitmapAt() uint32 { return 0 }
 
-// LogOffset calculates the offset to the log section within the merged file.
-func (e ChunkEntry) LogOffset() uint32 { return e.BitmapSize() }
+// DataAt calculates the offset to the log section within the merged file.
+func (e ChunkEntry) DataAt() uint32 { return e.BitmapSize() }
 
-// TotalSize calculates the total size of the merged file.
-func (e ChunkEntry) TotalSize() uint32 { return e.BitmapSize() + e.LogSize() }
+// Size calculates the total size of the merged file.
+func (e ChunkEntry) Size() uint32 { return e.BitmapSize() + e.DataSize() }
+
+// From returns the chunk start time in seconds.
+func (e ChunkEntry) From() uint32 { return uint32(e.Time[0]) }
+
+// Until returns the chunk end time in seconds.
+func (e ChunkEntry) Until() uint32 { return uint32(e.Time[1]) }
+
+// Between checks if the chunk overlaps with the given time range.
+func (e ChunkEntry) Between(start, end uint32) bool {
+	return e.From() <= end && e.Until() >= start
+}

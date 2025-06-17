@@ -58,9 +58,9 @@ func (l *Service) flushBuffer(ctx context.Context, buf *buffer.Buffer) error {
 		return fmt.Errorf("failed to upload merged chunk: %w", err)
 	}
 
-	// Append a new chunk entry to the metadata and encode it
+	// Use time bounds from buffer flush result
 	encodedMeta, err := codec.EncodeMetadata(
-		meta.Append(chunkNumber, bitmapSize, logSize, actorMap),
+		meta.Append(chunkNumber, bitmapSize, logSize, res.Time[0], res.Time[1], actorMap),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to encode metadata: %w", err)

@@ -24,25 +24,27 @@ func TestNewBuffer(t *testing.T) {
 func TestBuffer_Add(t *testing.T) {
 	c, _ := codec.NewCodec()
 	buf := New(2, c)
+	now := time.Now()
 
 	entry1, _ := codec.NewLogEntry(1, "test1", []uint32{10, 20})
 	entry2, _ := codec.NewLogEntry(2, "test2", []uint32{30})
 	entry3, _ := codec.NewLogEntry(3, "test3", []uint32{40})
 
-	assert.True(t, buf.Add(entry1))
+	assert.True(t, buf.Add(entry1, now))
 	assert.Equal(t, 1, buf.length)
-	assert.True(t, buf.Add(entry2))
+	assert.True(t, buf.Add(entry2, now.Add(time.Minute)))
 	assert.Equal(t, 2, buf.length)
-	assert.False(t, buf.Add(entry3)) // Buffer is full
+	assert.False(t, buf.Add(entry3, now.Add(2*time.Minute))) // Buffer is full
 	assert.Equal(t, 2, buf.length)
 }
 
 func TestBuffer_Flush(t *testing.T) {
 	c, _ := codec.NewCodec()
 	buf := New(10, c)
+	now := time.Now()
 
 	entry, _ := codec.NewLogEntry(1, "test", []uint32{10, 20})
-	buf.Add(entry)
+	buf.Add(entry, now)
 
 	flushResult, err := buf.Flush()
 	assert.NoError(t, err)
@@ -51,6 +53,10 @@ func TestBuffer_Flush(t *testing.T) {
 	assert.True(t, flushResult.Data.UncompressedSize > 0)
 	assert.True(t, flushResult.Data.CompressedSize > 0)
 	assert.NotEmpty(t, flushResult.Data.CompressedData)
+
+	// Check time bounds
+	assert.Equal(t, uint32(now.Unix()), flushResult.Time[0])
+	assert.Equal(t, uint32(now.Unix()), flushResult.Time[1])
 
 	// Check bitmaps
 	assert.Len(t, flushResult.Index, 2)
@@ -73,8 +79,8 @@ func TestBuffer_Query(t *testing.T) {
 
 	entry1, _ := codec.NewLogEntry(1, "test1", []uint32{10, 20})
 	entry2, _ := codec.NewLogEntry(2, "test2", []uint32{10, 30})
-	buf.Add(entry1)
-	buf.Add(entry2)
+	buf.Add(entry1, dayStart)
+	buf.Add(entry2, dayStart.Add(time.Minute))
 
 	// Query for actor 10
 	results := buf.Query(10, dayStart, dayStart, dayStart.Add(time.Hour))
@@ -120,7 +126,7 @@ func TestBuffer_QueryInclusiveTo(t *testing.T) {
 	ts := dayStart.Add(10*time.Minute + 30*time.Second)
 	id := sg.Next(ts)
 	entry, _ := codec.NewLogEntry(id, "test", []uint32{1})
-	buf.Add(entry)
+	buf.Add(entry, ts)
 
 	results := buf.Query(1, dayStart, dayStart, ts)
 	count := 0
@@ -140,10 +146,10 @@ func TestBuffer_QueryActors(t *testing.T) {
 	entry2, _ := codec.NewLogEntry(2, "test2", []uint32{10, 30})     // actors 10, 30
 	entry3, _ := codec.NewLogEntry(3, "test3", []uint32{10, 20, 30}) // actors 10, 20, 30
 	entry4, _ := codec.NewLogEntry(4, "test4", []uint32{40})         // actor 40
-	buf.Add(entry1)
-	buf.Add(entry2)
-	buf.Add(entry3)
-	buf.Add(entry4)
+	buf.Add(entry1, dayStart)
+	buf.Add(entry2, dayStart.Add(time.Minute))
+	buf.Add(entry3, dayStart.Add(2*time.Minute))
+	buf.Add(entry4, dayStart.Add(3*time.Minute))
 
 	// Query for single actor (should work like old Query)
 	results := buf.QueryActors(dayStart, dayStart, dayStart.Add(time.Hour), []uint32{10})

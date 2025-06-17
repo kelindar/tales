@@ -58,24 +58,24 @@ func TestIndexEntry(t *testing.T) {
 
 func TestChunkEntry(t *testing.T) {
 	t.Run("CreateAndAccess", func(t *testing.T) {
-		entry := NewChunkEntry(1234567890123, 2048, 4096, nil)
+		entry := NewChunkEntry(1234567890123, 2048, 4096, 1000, 2000, nil)
 
 		assert.Equal(t, uint64(1234567890123), entry.Offset())
 		assert.Equal(t, uint32(2048), entry.BitmapSize())
-		assert.Equal(t, uint32(4096), entry.LogSize())
+		assert.Equal(t, uint32(4096), entry.DataSize())
 
 		// Test calculated offsets
-		assert.Equal(t, uint32(0), entry.BitmapOffset())
-		assert.Equal(t, uint32(2048), entry.LogOffset())
-		assert.Equal(t, uint32(6144), entry.TotalSize())
+		assert.Equal(t, uint32(0), entry.BitmapAt())
+		assert.Equal(t, uint32(2048), entry.DataAt())
+		assert.Equal(t, uint32(6144), entry.Size())
 	})
 
 	t.Run("MaxValues", func(t *testing.T) {
-		entry := NewChunkEntry(^uint64(0), ^uint32(0), ^uint32(0), nil)
+		entry := NewChunkEntry(^uint64(0), ^uint32(0), ^uint32(0), 1000, 2000, nil)
 
 		assert.Equal(t, ^uint64(0), entry.Offset())
 		assert.Equal(t, ^uint32(0), entry.BitmapSize())
-		assert.Equal(t, ^uint32(0), entry.LogSize())
+		assert.Equal(t, ^uint32(0), entry.DataSize())
 	})
 }
 

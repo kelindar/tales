@@ -184,9 +184,9 @@ func (l *Service) run(ctx context.Context) {
 				sequenceID := seqGen.Next(now)
 				binary.LittleEndian.PutUint32((*c)[:4], sequenceID)
 				entry := codec.LogEntry(*c)
-				if !buf.Add(entry) {
+				if !buf.Add(entry, now) {
 					l.flushBuffer(ctx, buf)
-					buf.Add(entry) // Must succeed
+					buf.Add(entry, now) // Must succeed
 				}
 				continue
 			}
