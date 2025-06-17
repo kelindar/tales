@@ -7,13 +7,13 @@
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
 </p>
 
-## Tales: High-Performance Event Logging
+## Multi-Actor Event Logging in S3
 
-Tales provides a **high-performance, S3-backed log store** with actor-centric queries. It keeps recent events in memory and persists them to S3 in compressed chunks.
+Tales provides a **multi-actor, S3-backed log store** with actor-centric queries. It keeps recent events in memory and persists them to S3 in compressed chunks.
 
 - **Fast Writes:** Non-blocking logging with sequential encoding.
 - **Actor Queries:** Roaring bitmaps for quick per-actor lookups.
-- **S3 Only:** Zero local storage with compressed daily files.
+- **S3 Only:** Zero local storage with compressed periodic files.
 - **Thread-Safe:** Safe for concurrent logging from multiple goroutines.
 
 **Use When:**
@@ -22,7 +22,7 @@ Tales provides a **high-performance, S3-backed log store** with actor-centric qu
 - ✅ Wanting predictable memory usage and S3 as the only storage.
 
 **Not For:**
-- ❌ Archiving long-term logs without S3 access.
+- ❌ Archiving long-term logs with complex structure.
 - ❌ Applications that require random updates to existing entries.
 
 ## Quick Start
@@ -37,20 +37,20 @@ if err != nil {
 defer logger.Close()
 
 // Log a few events
-logger.Log("Player joined", 12345)
-logger.Log("Player moved", 12345)
+logger.Log("Player joined", 1)
+logger.Log("Player moved", 1)
 
 // Query them back
 from := time.Now().Add(-10 * time.Minute)
 to := time.Now()
 
 // Query for a single actor
-for _, text := range logger.Query(from, to, 12345) {
+for _, text := range logger.Query(from, to, 1) {
     fmt.Println(text)
 }
 
 // Query for entries that contain ALL specified actors (intersection)
-for _, text := range logger.Query(from, to, 12345, 67890) {
+for _, text := range logger.Query(from, to, 1, 2) {
     fmt.Println("Event involving both actors:", text)
 }
 ```
