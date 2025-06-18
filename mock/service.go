@@ -99,3 +99,14 @@ func containsAll(have, want []uint32) bool {
 	}
 	return true
 }
+
+// Close resets the buffer and releases any held resources.
+func (s *Service) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.buf = nil
+	s.next = 0
+	s.size = 0
+	s.capacity = 0
+	return nil
+}

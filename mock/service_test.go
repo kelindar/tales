@@ -47,3 +47,15 @@ func TestServiceQueryIntersection(t *testing.T) {
 	}
 	assert.Equal(t, []string{"b"}, res)
 }
+
+func TestServiceCloseResets(t *testing.T) {
+	svc := NewService(2)
+	svc.Log("pending", 1)
+
+	err := svc.Close()
+	assert.NoError(t, err)
+	assert.Equal(t, 0, svc.capacity)
+	assert.Nil(t, svc.buf)
+	assert.Zero(t, svc.size)
+	assert.Zero(t, svc.next)
+}
