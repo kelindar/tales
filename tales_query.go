@@ -9,19 +9,14 @@ import (
 	"iter"
 	"time"
 
+	"github.com/kelindar/async"
 	"github.com/kelindar/tales/internal/codec"
 	"github.com/kelindar/tales/internal/seq"
 	"github.com/weaviate/sroar"
 )
 
-// chunkTask represents a chunk processing task
-type chunkTask struct {
-	index int
-	fn    func() ([]logEntry, error) // The original chunk processing logic wrapped in a lambda that returns entries
-}
-
-// chunkResult represents the result of processing a chunk
-type chunkResult struct {
+// chunkTaskResult represents a chunk processing task result with index for ordering
+type chunkTaskResult struct {
 	index   int
 	entries []logEntry
 	err     error
@@ -78,7 +73,8 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 	toSec := uint32(to.Unix())
 
 	// Filter relevant chunks first
-	var tasks []chunkTask
+	var tasks []async.Task
+	var taskIndices []int // Track the original index for each task to maintain order
 	for i, chunk := range meta.Chunks {
 		// Skip chunks that don't overlap with query time range
 		if !chunk.Between(fromSec, toSec) {
@@ -87,84 +83,86 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 		
 		// Wrap the original chunk processing logic in a lambda
 		chunkKey := keyOfChunk(seq.FormatDate(day), chunk.Offset())
-		task := chunkTask{
-			index: i,
-			fn: func() ([]logEntry, error) {
-				var index *sroar.Bitmap
-				for _, a := range actors {
-					idx, ok := chunk.Actors[a]
-					if !ok || uint32(idx[0]) < t0 || uint32(idx[0]) > t1 {
-						index = nil
-						break
-					}
-
-					bitmap, err := l.loadBitmap(ctx, chunkKey, idx)
-					if err != nil {
-						return nil, err
-					}
-
-					switch {
-					case index == nil:
-						index = bitmap
-					case !index.IsEmpty():
-						index.And(bitmap)
-					}
+		index := i // Capture index for closure
+		
+		task := async.NewTask(func(ctx context.Context) (any, error) {
+			var idx *sroar.Bitmap
+			for _, a := range actors {
+				idxEntry, ok := chunk.Actors[a]
+				if !ok || uint32(idxEntry[0]) < t0 || uint32(idxEntry[0]) > t1 {
+					idx = nil
+					break
 				}
 
-				// Collect log entries instead of calling yield
-				if index != nil && !index.IsEmpty() {
-					return l.collectChunkEntries(ctx, chunkKey, chunk, *index, day, from, to)
+				bitmap, err := l.loadBitmap(ctx, chunkKey, idxEntry)
+				if err != nil {
+					return nil, err
 				}
-				return nil, nil
-			},
-		}
+
+				switch {
+				case idx == nil:
+					idx = bitmap
+				case !idx.IsEmpty():
+					idx.And(bitmap)
+				}
+			}
+
+			// Collect log entries instead of calling yield
+			if idx != nil && !idx.IsEmpty() {
+				entries, err := l.collectChunkEntries(ctx, chunkKey, chunk, *idx, day, from, to)
+				return chunkTaskResult{
+					index:   index,
+					entries: entries,
+					err:     err,
+				}, nil
+			}
+			return chunkTaskResult{
+				index:   index,
+				entries: nil,
+				err:     nil,
+			}, nil
+		})
+		
 		tasks = append(tasks, task)
+		taskIndices = append(taskIndices, i)
 	}
 
 	if len(tasks) == 0 {
 		return true
 	}
 
-	// Process chunks in parallel
-	return l.processChunksParallel(ctx, tasks, yield)
+	// Process chunks in parallel using async.Consume
+	return l.processChunksWithAsync(ctx, tasks, yield)
 }
 
-// processChunksParallel processes chunks using a worker pool to parallelize downloads
-func (l *Service) processChunksParallel(ctx context.Context, tasks []chunkTask, yield func(time.Time, string) bool) bool {
+// processChunksWithAsync processes chunks using kelindar/async for task management
+func (l *Service) processChunksWithAsync(ctx context.Context, tasks []async.Task, yield func(time.Time, string) bool) bool {
 	if len(tasks) == 0 {
 		return true
 	}
 
 	// Use sequential processing if only one task or parallel downloads is 1
 	if len(tasks) == 1 || l.config.ParallelDownloads == 1 {
-		entries, err := tasks[0].fn()
+		task := tasks[0].Run(ctx)
+		outcome, err := task.Outcome()
 		if err != nil {
 			return true // Skip chunks that fail to process
 		}
-		for _, entry := range entries {
-			if !yield(entry.timestamp, entry.text) {
-				return false
+		
+		if result, ok := outcome.(chunkTaskResult); ok && result.err == nil {
+			for _, entry := range result.entries {
+				if !yield(entry.timestamp, entry.text) {
+					return false
+				}
 			}
 		}
 		return true
 	}
 
-	// Create channels for work distribution
-	taskChan := make(chan chunkTask, len(tasks))
-	resultChan := make(chan chunkResult, len(tasks))
-
-	// Create worker pool
-	numWorkers := l.config.ParallelDownloads
-	if numWorkers > len(tasks) {
-		numWorkers = len(tasks)
-	}
-
-	// Start workers
-	for i := 0; i < numWorkers; i++ {
-		go l.chunkWorker(ctx, taskChan, resultChan)
-	}
-
-	// Send tasks to workers
+	// Create a channel to feed tasks to the consumer
+	taskChan := make(chan async.Task, len(tasks))
+	
+	// Send all tasks to the channel
 	go func() {
 		defer close(taskChan)
 		for _, task := range tasks {
@@ -176,22 +174,38 @@ func (l *Service) processChunksParallel(ctx context.Context, tasks []chunkTask, 
 		}
 	}()
 
-	// Collect results and maintain order
-	results := make([]chunkResult, len(tasks))
-	for i := 0; i < len(tasks); i++ {
-		select {
-		case result := <-resultChan:
-			results[result.index] = result
-		case <-ctx.Done():
-			return false
+	// Use async.Consume to process tasks with specified concurrency
+	consumerTask := async.Consume(ctx, l.config.ParallelDownloads, taskChan)
+	consumerTask.Run(ctx)
+
+	// Wait for all tasks to complete and collect results
+	results := make([]chunkTaskResult, 0, len(tasks))
+	for _, task := range tasks {
+		outcome, err := task.Outcome()
+		if err != nil {
+			continue // Skip tasks that failed
+		}
+		
+		if result, ok := outcome.(chunkTaskResult); ok {
+			if result.err != nil {
+				continue // Skip chunks that failed to process
+			}
+			results = append(results, result)
+		}
+	}
+
+	// Sort results by index to maintain chronological order
+	// Since we collected results from async tasks, we need to sort them
+	for i := 0; i < len(results)-1; i++ {
+		for j := i + 1; j < len(results); j++ {
+			if results[i].index > results[j].index {
+				results[i], results[j] = results[j], results[i]
+			}
 		}
 	}
 
 	// Process results in order to maintain chronological order
 	for _, result := range results {
-		if result.err != nil {
-			continue // Skip chunks that failed to process
-		}
 		for _, entry := range result.entries {
 			if !yield(entry.timestamp, entry.text) {
 				return false
@@ -202,34 +216,6 @@ func (l *Service) processChunksParallel(ctx context.Context, tasks []chunkTask, 
 	return true
 }
 
-// chunkWorker processes chunks from the task channel
-func (l *Service) chunkWorker(ctx context.Context, taskChan <-chan chunkTask, resultChan chan<- chunkResult) {
-	for {
-		select {
-		case task, ok := <-taskChan:
-			if !ok {
-				return
-			}
-			
-			// Run the chunk processing function
-			entries, err := task.fn()
-			
-			result := chunkResult{
-				index:   task.index,
-				entries: entries,
-				err:     err,
-			}
-
-			select {
-			case resultChan <- result:
-			case <-ctx.Done():
-				return
-			}
-		case <-ctx.Done():
-			return
-		}
-	}
-}
 
 // collectChunkEntries collects all entries from a chunk into a slice
 func (l *Service) collectChunkEntries(ctx context.Context, chunkKey string, chunk codec.ChunkEntry, sids sroar.Bitmap, day, from, to time.Time) ([]logEntry, error) {
