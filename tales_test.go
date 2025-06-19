@@ -5,6 +5,7 @@ package tales
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -179,6 +180,96 @@ func TestCloseFlushes(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, exists)
 	}
+}
+
+func TestParallelDownloadsConfiguration(t *testing.T) {
+	// Test with custom parallel downloads setting
+	logger, err := New(
+		"test-bucket", 
+		"us-east-1",
+		WithParallelDownloads(8),
+		WithClient(func(config s3.Config) (s3.Client, error) {
+			mockS3 := s3mock.New("test-bucket", "us-east-1")
+			return s3.NewMockClient(mockS3, config)
+		}),
+	)
+	require.NoError(t, err)
+	defer logger.Close()
+	
+	assert.Equal(t, 8, logger.config.ParallelDownloads)
+	
+	// Test with default value
+	logger2, err := New(
+		"test-bucket", 
+		"us-east-1",
+		WithClient(func(config s3.Config) (s3.Client, error) {
+			mockS3 := s3mock.New("test-bucket", "us-east-1")
+			return s3.NewMockClient(mockS3, config)
+		}),
+	)
+	require.NoError(t, err)
+	defer logger2.Close()
+	
+	assert.Equal(t, 4, logger2.config.ParallelDownloads) // default value
+	
+	// Test validation
+	_, err = New("test-bucket", "us-east-1", 
+		WithParallelDownloads(0),
+		WithClient(func(config s3.Config) (s3.Client, error) {
+			mockS3 := s3mock.New("test-bucket", "us-east-1")
+			return s3.NewMockClient(mockS3, config)
+		}),
+	)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "parallel downloads must be at least 1")
+	
+	_, err = New("test-bucket", "us-east-1", 
+		WithParallelDownloads(25),
+		WithClient(func(config s3.Config) (s3.Client, error) {
+			mockS3 := s3mock.New("test-bucket", "us-east-1")
+			return s3.NewMockClient(mockS3, config)
+		}),
+	)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "parallel downloads must not exceed 20")
+}
+
+func TestParallelDownloadsBehavior(t *testing.T) {
+	// Create a service with parallel downloads
+	logger, err := New(
+		"test-bucket", 
+		"us-east-1",
+		WithParallelDownloads(3),
+		WithClient(func(config s3.Config) (s3.Client, error) {
+			mockS3 := s3mock.New("test-bucket", "us-east-1")
+			return s3.NewMockClient(mockS3, config)
+		}),
+	)
+	require.NoError(t, err)
+	defer logger.Close()
+
+	// Add multiple log entries that will create multiple chunks
+	for i := 0; i < 100; i++ {
+		err = logger.Log(fmt.Sprintf("test message %d", i), uint32(i%10))
+		require.NoError(t, err)
+		if i%20 == 19 { // Flush every 20 entries to create multiple chunks
+			logger.flush()
+		}
+	}
+	logger.flush() // Final flush
+
+	// Query to trigger parallel downloads
+	from := time.Now().Add(-1 * time.Hour)
+	to := time.Now().Add(1 * time.Hour)
+	
+	count := 0
+	for _, msg := range logger.Query(from, to, 1) {
+		_ = msg
+		count++
+	}
+	
+	// Should find entries for actor 1 (messages 1, 11, 21, 31, 41, 51, 61, 71, 81, 91)
+	assert.Greater(t, count, 0, "Should find some log entries")
 }
 
 func newService() (*Service, error) {

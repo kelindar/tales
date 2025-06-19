@@ -14,6 +14,26 @@ import (
 	"github.com/weaviate/sroar"
 )
 
+// chunkTask represents a chunk processing task
+type chunkTask struct {
+	index int
+	chunk codec.ChunkEntry
+	key   string
+}
+
+// chunkResult represents the result of processing a chunk
+type chunkResult struct {
+	index   int
+	entries []chunkEntry
+	err     error
+}
+
+// chunkEntry represents a single log entry with its timestamp
+type chunkEntry struct {
+	timestamp time.Time
+	text      string
+}
+
 // queryWarm queries the in-memory buffer for entries.
 func (l *Service) queryWarm(actors []uint32, from, to time.Time, yield func(time.Time, string) bool) {
 	ret := make(chan iter.Seq[codec.LogEntry], 1)
@@ -58,44 +78,200 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 	fromSec := uint32(from.Unix())
 	toSec := uint32(to.Unix())
 
-	// For each chunk, load all relevant bitmaps and compute intersection
-	for _, chunk := range meta.Chunks {
+	// Filter relevant chunks first
+	var tasks []chunkTask
+	for i, chunk := range meta.Chunks {
 		// Skip chunks that don't overlap with query time range
 		if !chunk.Between(fromSec, toSec) {
 			continue
 		}
-		chunkKey := keyOfChunk(seq.FormatDate(day), chunk.Offset())
-		var index *sroar.Bitmap
-		for _, a := range actors {
-			idx, ok := chunk.Actors[a]
-			if !ok || uint32(idx[0]) < t0 || uint32(idx[0]) > t1 {
-				index = nil
-				break
-			}
+		tasks = append(tasks, chunkTask{
+			index: i,
+			chunk: chunk,
+			key:   keyOfChunk(seq.FormatDate(day), chunk.Offset()),
+		})
+	}
 
-			bitmap, err := l.loadBitmap(ctx, chunkKey, idx)
-			if err != nil {
-				index = nil
-				break
-			}
+	if len(tasks) == 0 {
+		return true
+	}
 
-			switch {
-			case index == nil:
-				index = bitmap
-			case !index.IsEmpty():
-				index.And(bitmap)
+	// Process chunks in parallel
+	return l.processChunksParallel(ctx, tasks, actors, t0, t1, day, from, to, yield)
+}
+
+// processChunksParallel processes chunks using a worker pool to parallelize downloads
+func (l *Service) processChunksParallel(ctx context.Context, tasks []chunkTask, actors []uint32, t0, t1 uint32, day, from, to time.Time, yield func(time.Time, string) bool) bool {
+	if len(tasks) == 0 {
+		return true
+	}
+
+	// Use sequential processing if only one task or parallel downloads is 1
+	if len(tasks) == 1 || l.config.ParallelDownloads == 1 {
+		return l.processChunkSequential(ctx, tasks[0], actors, t0, t1, day, from, to, yield)
+	}
+
+	// Create channels for work distribution
+	taskChan := make(chan chunkTask, len(tasks))
+	resultChan := make(chan chunkResult, len(tasks))
+
+	// Create worker pool
+	numWorkers := l.config.ParallelDownloads
+	if numWorkers > len(tasks) {
+		numWorkers = len(tasks)
+	}
+
+	// Start workers
+	for i := 0; i < numWorkers; i++ {
+		go l.chunkWorker(ctx, taskChan, resultChan, actors, t0, t1, day, from, to)
+	}
+
+	// Send tasks to workers
+	go func() {
+		defer close(taskChan)
+		for _, task := range tasks {
+			select {
+			case taskChan <- task:
+			case <-ctx.Done():
+				return
 			}
 		}
+	}()
 
-		// Query log section with intersection bitmap
-		if index != nil && !index.IsEmpty() {
-			if !l.queryChunk(ctx, chunkKey, chunk, *index, day, from, to, yield) {
+	// Collect results and maintain order
+	results := make([]chunkResult, len(tasks))
+	for i := 0; i < len(tasks); i++ {
+		select {
+		case result := <-resultChan:
+			results[result.index] = result
+		case <-ctx.Done():
+			return false
+		}
+	}
+
+	// Process results in order to maintain chronological order
+	for _, result := range results {
+		if result.err != nil {
+			continue // Skip chunks that failed to process
+		}
+		for _, entry := range result.entries {
+			if !yield(entry.timestamp, entry.text) {
 				return false
 			}
 		}
 	}
 
 	return true
+}
+
+// processChunkSequential processes a single chunk (used for single chunk or when parallelism is disabled)
+func (l *Service) processChunkSequential(ctx context.Context, task chunkTask, actors []uint32, t0, t1 uint32, day, from, to time.Time, yield func(time.Time, string) bool) bool {
+	var index *sroar.Bitmap
+	for _, a := range actors {
+		idx, ok := task.chunk.Actors[a]
+		if !ok || uint32(idx[0]) < t0 || uint32(idx[0]) > t1 {
+			index = nil
+			break
+		}
+
+		bitmap, err := l.loadBitmap(ctx, task.key, idx)
+		if err != nil {
+			index = nil
+			break
+		}
+
+		switch {
+		case index == nil:
+			index = bitmap
+		case !index.IsEmpty():
+			index.And(bitmap)
+		}
+	}
+
+	// Query log section with intersection bitmap
+	if index != nil && !index.IsEmpty() {
+		return l.queryChunk(ctx, task.key, task.chunk, *index, day, from, to, yield)
+	}
+	return true
+}
+
+// chunkWorker processes chunks from the task channel
+func (l *Service) chunkWorker(ctx context.Context, taskChan <-chan chunkTask, resultChan chan<- chunkResult, actors []uint32, t0, t1 uint32, day, from, to time.Time) {
+	for {
+		select {
+		case task, ok := <-taskChan:
+			if !ok {
+				return
+			}
+			
+			result := chunkResult{index: task.index}
+			
+			// Process bitmap intersection
+			var index *sroar.Bitmap
+			for _, a := range actors {
+				idx, ok := task.chunk.Actors[a]
+				if !ok || uint32(idx[0]) < t0 || uint32(idx[0]) > t1 {
+					index = nil
+					break
+				}
+
+				bitmap, err := l.loadBitmap(ctx, task.key, idx)
+				if err != nil {
+					result.err = err
+					index = nil
+					break
+				}
+
+				switch {
+				case index == nil:
+					index = bitmap
+				case !index.IsEmpty():
+					index.And(bitmap)
+				}
+			}
+
+			// Process log entries if we have a valid bitmap
+			if index != nil && !index.IsEmpty() {
+				entries, err := l.collectChunkEntries(ctx, task.key, task.chunk, *index, day, from, to)
+				result.entries = entries
+				result.err = err
+			}
+
+			select {
+			case resultChan <- result:
+			case <-ctx.Done():
+				return
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// collectChunkEntries collects all entries from a chunk into a slice
+func (l *Service) collectChunkEntries(ctx context.Context, chunkKey string, chunk codec.ChunkEntry, sids sroar.Bitmap, day, from, to time.Time) ([]chunkEntry, error) {
+	if sids.IsEmpty() {
+		return nil, nil
+	}
+
+	entries, err := l.rangeChunks(ctx, chunkKey, chunk, &sids)
+	if err != nil {
+		return nil, err
+	}
+
+	var result []chunkEntry
+	for entry := range entries {
+		id := entry.ID()
+		ts := seq.TimeOf(id, day)
+		if !ts.Before(from) && !ts.After(to) {
+			result = append(result, chunkEntry{
+				timestamp: ts,
+				text:      entry.Text(),
+			})
+		}
+	}
+
+	return result, nil
 }
 
 // loadBitmap downloads and decodes a single bitmap for a given index entry.
