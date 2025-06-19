@@ -51,8 +51,8 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 	}
 
 	// Pre-compute time range in minutes once per day
-	t0 := uint32(from.Sub(day).Minutes())
-	t1 := uint32(to.Sub(day).Minutes())
+	t0 := uint32(max(0, int(from.Sub(day).Minutes())))
+	t1 := uint32(min(1440, int(to.Sub(day).Minutes()))) // 1440 minutes = 24 hours
 
 	// Pre-compute time range in seconds for chunk filtering
 	fromSec := uint32(from.Unix())
