@@ -52,7 +52,7 @@ type Service struct {
 	metaLRU  *cache.LRU[string, *codec.Metadata]
 	commands chan command
 	jobs     chan async.Task[iter.Seq[codec.LogEntry]]
-	consumer async.Task[iter.Seq[codec.LogEntry]]
+	consumer async.Awaiter
 	wg       sync.WaitGroup
 	cancel   context.CancelFunc
 	closed   int32 // atomic flag
@@ -161,7 +161,7 @@ func (l *Service) Close() error {
 
 	// Stop worker pool
 	close(l.jobs)
-	l.consumer.Outcome()
+	l.consumer.Wait()
 
 	// Signal the run loop to exit and wait for it to finish
 	close(l.commands)

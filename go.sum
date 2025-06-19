@@ -2,8 +2,8 @@ github.com/RoaringBitmap/roaring v0.6.1 h1:O36Tdaj1Fi/zyr25shTHwlQPGdq53+u4WkM08
 github.com/RoaringBitmap/roaring v0.6.1/go.mod h1:WZ83fjBF/7uBHi6QoFyfGL4+xuV4Qn+xFkm4+vSzrhE=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
-github.com/kelindar/async v1.3.0 h1:mPBTJ/eXCKE+HHKfY1r68Wjo1KjSyArajlsipcSajEY=
-github.com/kelindar/async v1.3.0/go.mod h1:gaCq2zl7zDKjlPY05R45l/0hHgVkJxsfjR3X7sxxvDg=
+github.com/kelindar/async v1.3.1 h1:UL+s/40S/ikNxBkAiqLmtfgcrHxVdk2mvzYneJxc7Xg=
+github.com/kelindar/async v1.3.1/go.mod h1:gaCq2zl7zDKjlPY05R45l/0hHgVkJxsfjR3X7sxxvDg=
 github.com/kelindar/s3 v0.0.3 h1:izXVdKkH7faO1vM+qQ1zSA9Y6L/8C8p2CkF/FIrnUa0=
 github.com/kelindar/s3 v0.0.3/go.mod h1:O2/uN3efPfCUVNmNPHNBY242Bm7LIu+RHQ7bDU5iUXs=
 github.com/klauspost/compress v1.18.0 h1:c/Cqfb0r+Yi+JtIEq73FWXVkRonBlf0CRNYc8Zttxdo=
