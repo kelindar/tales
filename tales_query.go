@@ -80,11 +80,11 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 		if !chunk.Between(fromSec, toSec) {
 			continue
 		}
-		
+
 		// Wrap the original chunk processing logic in a lambda
 		chunkKey := keyOfChunk(seq.FormatDate(day), chunk.Offset())
 		index := i // Capture index for closure
-		
+
 		task := async.NewTask(func(ctx context.Context) (any, error) {
 			var idx *sroar.Bitmap
 			for _, a := range actors {
@@ -122,7 +122,7 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 				err:     nil,
 			}, nil
 		})
-		
+
 		tasks = append(tasks, task)
 		taskIndices = append(taskIndices, i)
 	}
@@ -131,52 +131,45 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 		return true
 	}
 
-	// Process chunks in parallel using async.Consume
-	return l.processChunksWithAsync(ctx, tasks, yield)
+	// Process chunks in parallel using the service's worker pool
+	return l.processChunksWithWorkerPool(ctx, tasks, yield)
 }
 
-// processChunksWithAsync processes chunks using kelindar/async for task management
-func (l *Service) processChunksWithAsync(ctx context.Context, tasks []async.Task, yield func(time.Time, string) bool) bool {
+// processChunksWithWorkerPool processes chunks using the service's shared worker pool
+func (l *Service) processChunksWithWorkerPool(ctx context.Context, tasks []async.Task, yield func(time.Time, string) bool) bool {
 	if len(tasks) == 0 {
 		return true
 	}
 
-	// Use sequential processing if only one task or parallel downloads is 1
-	if len(tasks) == 1 || l.config.ParallelDownloads == 1 {
-		task := tasks[0].Run(ctx)
-		outcome, err := task.Outcome()
-		if err != nil {
-			return true // Skip chunks that fail to process
-		}
-		
-		if result, ok := outcome.(chunkTaskResult); ok && result.err == nil {
-			for _, entry := range result.entries {
-				if !yield(entry.timestamp, entry.text) {
-					return false
+	// Use sequential processing if concurrency is disabled or only one task
+	if l.config.Concurrency < 1 || len(tasks) == 1 || l.taskChan == nil {
+		// Process tasks sequentially
+		for _, task := range tasks {
+			taskRunner := task.Run(ctx)
+			outcome, err := taskRunner.Outcome()
+			if err != nil {
+				continue // Skip tasks that failed
+			}
+
+			if result, ok := outcome.(chunkTaskResult); ok && result.err == nil {
+				for _, entry := range result.entries {
+					if !yield(entry.timestamp, entry.text) {
+						return false
+					}
 				}
 			}
 		}
 		return true
 	}
 
-	// Create a channel to feed tasks to the consumer
-	taskChan := make(chan async.Task, len(tasks))
-	
-	// Send all tasks to the channel
-	go func() {
-		defer close(taskChan)
-		for _, task := range tasks {
-			select {
-			case taskChan <- task:
-			case <-ctx.Done():
-				return
-			}
+	// Send all tasks to the shared worker pool
+	for _, task := range tasks {
+		select {
+		case l.taskChan <- task:
+		case <-ctx.Done():
+			return false
 		}
-	}()
-
-	// Use async.Consume to process tasks with specified concurrency
-	consumerTask := async.Consume(ctx, l.config.ParallelDownloads, taskChan)
-	consumerTask.Run(ctx)
+	}
 
 	// Wait for all tasks to complete and collect results
 	results := make([]chunkTaskResult, 0, len(tasks))
@@ -185,7 +178,7 @@ func (l *Service) processChunksWithAsync(ctx context.Context, tasks []async.Task
 		if err != nil {
 			continue // Skip tasks that failed
 		}
-		
+
 		if result, ok := outcome.(chunkTaskResult); ok {
 			if result.err != nil {
 				continue // Skip chunks that failed to process
@@ -215,7 +208,6 @@ func (l *Service) processChunksWithAsync(ctx context.Context, tasks []async.Task
 
 	return true
 }
-
 
 // collectChunkEntries collects all entries from a chunk into a slice
 func (l *Service) collectChunkEntries(ctx context.Context, chunkKey string, chunk codec.ChunkEntry, sids sroar.Bitmap, day, from, to time.Time) ([]logEntry, error) {

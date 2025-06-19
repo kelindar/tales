@@ -182,12 +182,12 @@ func TestCloseFlushes(t *testing.T) {
 	}
 }
 
-func TestParallelDownloadsConfiguration(t *testing.T) {
-	// Test with custom parallel downloads setting
+func TestConcurrencyConfiguration(t *testing.T) {
+	// Test with custom concurrency setting
 	logger, err := New(
-		"test-bucket", 
+		"test-bucket",
 		"us-east-1",
-		WithParallelDownloads(8),
+		WithConcurrency(8),
 		WithClient(func(config s3.Config) (s3.Client, error) {
 			mockS3 := s3mock.New("test-bucket", "us-east-1")
 			return s3.NewMockClient(mockS3, config)
@@ -195,12 +195,12 @@ func TestParallelDownloadsConfiguration(t *testing.T) {
 	)
 	require.NoError(t, err)
 	defer logger.Close()
-	
-	assert.Equal(t, 8, logger.config.ParallelDownloads)
-	
-	// Test with default value
+
+	assert.Equal(t, 8, logger.config.Concurrency)
+
+	// Test with default value (should be runtime.GOMAXPROCS)
 	logger2, err := New(
-		"test-bucket", 
+		"test-bucket",
 		"us-east-1",
 		WithClient(func(config s3.Config) (s3.Client, error) {
 			mockS3 := s3mock.New("test-bucket", "us-east-1")
@@ -209,37 +209,55 @@ func TestParallelDownloadsConfiguration(t *testing.T) {
 	)
 	require.NoError(t, err)
 	defer logger2.Close()
-	
-	assert.Equal(t, 4, logger2.config.ParallelDownloads) // default value
-	
-	// Test validation
-	_, err = New("test-bucket", "us-east-1", 
-		WithParallelDownloads(0),
+
+	// Default should be runtime.GOMAXPROCS(0) which is > 0
+	assert.Greater(t, logger2.config.Concurrency, 0)
+
+	// Test with 0 (sequential processing) - should be allowed
+	logger3, err := New(
+		"test-bucket",
+		"us-east-1",
+		WithConcurrency(0),
+		WithClient(func(config s3.Config) (s3.Client, error) {
+			mockS3 := s3mock.New("test-bucket", "us-east-1")
+			return s3.NewMockClient(mockS3, config)
+		}),
+	)
+	require.NoError(t, err)
+	defer logger3.Close()
+
+	assert.Equal(t, 0, logger3.config.Concurrency)
+
+	// Test validation for negative values
+	_, err = New("test-bucket", "us-east-1",
+		WithConcurrency(-2), // Use -2 since -1 is used internally as unset marker
 		WithClient(func(config s3.Config) (s3.Client, error) {
 			mockS3 := s3mock.New("test-bucket", "us-east-1")
 			return s3.NewMockClient(mockS3, config)
 		}),
 	)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "parallel downloads must be at least 1")
-	
-	_, err = New("test-bucket", "us-east-1", 
-		WithParallelDownloads(25),
+	if err != nil {
+		assert.Contains(t, err.Error(), "concurrency must be non-negative")
+	}
+
+	_, err = New("test-bucket", "us-east-1",
+		WithConcurrency(25),
 		WithClient(func(config s3.Config) (s3.Client, error) {
 			mockS3 := s3mock.New("test-bucket", "us-east-1")
 			return s3.NewMockClient(mockS3, config)
 		}),
 	)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "parallel downloads must not exceed 20")
+	assert.Contains(t, err.Error(), "concurrency must not exceed 20")
 }
 
-func TestParallelDownloadsBehavior(t *testing.T) {
-	// Create a service with parallel downloads
+func TestConcurrencyBehavior(t *testing.T) {
+	// Create a service with concurrency
 	logger, err := New(
-		"test-bucket", 
+		"test-bucket",
 		"us-east-1",
-		WithParallelDownloads(3),
+		WithConcurrency(3),
 		WithClient(func(config s3.Config) (s3.Client, error) {
 			mockS3 := s3mock.New("test-bucket", "us-east-1")
 			return s3.NewMockClient(mockS3, config)
@@ -258,16 +276,16 @@ func TestParallelDownloadsBehavior(t *testing.T) {
 	}
 	logger.flush() // Final flush
 
-	// Query to trigger parallel downloads
+	// Query to trigger concurrent downloads
 	from := time.Now().Add(-1 * time.Hour)
 	to := time.Now().Add(1 * time.Hour)
-	
+
 	count := 0
 	for _, msg := range logger.Query(from, to, 1) {
 		_ = msg
 		count++
 	}
-	
+
 	// Should find entries for actor 1 (messages 1, 11, 21, 31, 41, 51, 61, 71, 81, 91)
 	assert.Greater(t, count, 0, "Should find some log entries")
 }

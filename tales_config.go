@@ -5,6 +5,7 @@ package tales
 
 import (
 	"fmt"
+	"runtime"
 	"time"
 
 	"github.com/kelindar/s3/aws"
@@ -40,11 +41,10 @@ func WithCache(size int) Option {
 	return func(c *config) { c.CacheSize = size }
 }
 
-// WithParallelDownloads sets the number of parallel chunk downloads.
-func WithParallelDownloads(workers int) Option {
-	return func(c *config) { 
-		c.ParallelDownloads = workers
-		c.parallelSet = true
+// WithConcurrency sets the number of concurrent chunk downloads.
+func WithConcurrency(concurrency int) Option {
+	return func(c *config) {
+		c.Concurrency = concurrency
 	}
 }
 
@@ -61,13 +61,12 @@ func WithBackblaze() Option {
 // config holds all configuration for the logger. It is kept private and
 // manipulated through Option helpers.
 type config struct {
-	S3                s3.Config
-	ChunkInterval     time.Duration
-	NewClient         func(s3.Config) (s3.Client, error)
-	CacheSize         int
-	BufferSize        int
-	ParallelDownloads int
-	parallelSet       bool // tracks if ParallelDownloads was explicitly set
+	S3            s3.Config
+	ChunkInterval time.Duration
+	NewClient     func(s3.Config) (s3.Client, error)
+	CacheSize     int
+	BufferSize    int
+	Concurrency   int
 }
 
 // setDefaults applies default values to the configuration.
@@ -81,8 +80,8 @@ func (c *config) setDefaults() {
 	if c.CacheSize == 0 {
 		c.CacheSize = 30 // days
 	}
-	if c.ParallelDownloads == 0 && !c.parallelSet {
-		c.ParallelDownloads = 4 // reasonable default for parallel downloads
+	if c.Concurrency == -1 { // Only set default if not explicitly configured
+		c.Concurrency = runtime.GOMAXPROCS(0) // use all available CPU cores
 	}
 	if c.S3.Service == "" {
 		c.S3.Service = "s3"
@@ -102,10 +101,10 @@ func (c *config) validate() error {
 		return fmt.Errorf("buffer size must be at least 1")
 	case c.CacheSize < 0:
 		return fmt.Errorf("metadata cache size must be non-negative")
-	case c.ParallelDownloads < 1:
-		return fmt.Errorf("parallel downloads must be at least 1")
-	case c.ParallelDownloads > 20:
-		return fmt.Errorf("parallel downloads must not exceed 20")
+	case c.Concurrency < 0:
+		return fmt.Errorf("concurrency must be non-negative (0 means sequential)")
+	case c.Concurrency > 20:
+		return fmt.Errorf("concurrency must not exceed 20")
 	}
 	return nil
 }

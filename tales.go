@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kelindar/async"
 	"github.com/kelindar/tales/internal/buffer"
 	"github.com/kelindar/tales/internal/cache"
 	"github.com/kelindar/tales/internal/codec"
@@ -51,19 +52,25 @@ type Service struct {
 	commands chan command
 	wg       sync.WaitGroup
 	cancel   context.CancelFunc
-	closed   int32 // atomic flag
+	closed   int32           // atomic flag
+	taskChan chan async.Task // single worker pool for all queries
 }
 
 // New creates a new logger using the provided S3 bucket and region. Optional
 // behaviour can be configured via Option functions.
 func New(bucket, region string, opts ...Option) (*Service, error) {
-	cfg := config{S3: s3.Config{Bucket: bucket, Region: region}}
+	cfg := config{
+		S3:          s3.Config{Bucket: bucket, Region: region},
+		Concurrency: -1, // Unset marker
+	}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
 
 	// Set defaults and validate configuration
 	cfg.setDefaults()
+
+	// Now that defaults are set, we can validate (after -1 is resolved)
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
@@ -94,6 +101,18 @@ func New(bucket, region string, opts ...Option) (*Service, error) {
 		metaLRU:  cache.NewLRU[string, *codec.Metadata](cfg.CacheSize),
 		commands: make(chan command, cfg.BufferSize),
 		cancel:   cancel,
+	}
+
+	// Initialize worker pool if concurrency is enabled
+	if cfg.Concurrency > 0 {
+		logger.taskChan = make(chan async.Task, cfg.BufferSize)
+		// Start the worker pool consumer
+		logger.wg.Add(1)
+		go func() {
+			defer logger.wg.Done()
+			consumerTask := async.Consume(ctx, cfg.Concurrency, logger.taskChan)
+			consumerTask.Run(ctx)
+		}()
 	}
 
 	// Start the background goroutine
@@ -153,6 +172,12 @@ func (l *Service) Close() error {
 
 	// Signal the run loop to exit and wait for it to finish
 	close(l.commands)
+
+	// Close the task channel if it exists
+	if l.taskChan != nil {
+		close(l.taskChan)
+	}
+
 	l.wg.Wait()
 
 	// Close the codec
