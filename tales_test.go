@@ -139,6 +139,57 @@ func TestIntegration(t *testing.T) {
 	}, resultsMultiple)
 }
 
+func TestMultiDayQuery(t *testing.T) {
+	logger, err := newService()
+	require.NoError(t, err)
+	defer logger.Close()
+
+	// Log some messages now (this will be "yesterday" from the perspective of our future query)
+	logger.Log("message from day 1", 1)
+	logger.Log("message from day 1 actor 2", 2)
+	logger.flush()
+	logger.Log("another message from day 1", 1, 3)
+	logger.flush()
+
+	// Simulate querying from the future - set up a range that spans multiple days
+	// We pretend we're querying 2 days from now, looking back 3 days and forward 1 day
+	futureNow := time.Now().Add(2 * 24 * time.Hour)
+	from := futureNow.Add(-3 * 24 * time.Hour) // 3 days before our "future now"
+	to := futureNow.Add(1 * 24 * time.Hour)    // 1 day after our "future now"
+
+	// This query spans 4 days total, and our logged data should be found
+	// within this range since it was logged "2 days ago" from the future perspective
+
+	// Query for actor 1 across multiple days
+	var results1 []string
+	for _, msg := range logger.Query(from, to, 1) {
+		results1 = append(results1, msg)
+	}
+
+	assert.Equal(t, []string{
+		"message from day 1",
+		"another message from day 1",
+	}, results1)
+
+	// Query for multiple actors across multiple days
+	var resultsMultiple []string
+	for _, msg := range logger.Query(from, to, 1, 3) {
+		resultsMultiple = append(resultsMultiple, msg)
+	}
+	assert.Equal(t, []string{
+		"another message from day 1", // Only entry that has both actors 1 and 3
+	}, resultsMultiple)
+
+	// Query for a time range that doesn't include our data (future range)
+	futureFrom := time.Now().Add(5 * 24 * time.Hour)
+	futureTo := time.Now().Add(7 * 24 * time.Hour)
+	var futureResults []string
+	for _, msg := range logger.Query(futureFrom, futureTo, 1) {
+		futureResults = append(futureResults, msg)
+	}
+	assert.Empty(t, futureResults, "Should not find any results in future time range")
+}
+
 func TestBuildKeys(t *testing.T) {
 	// Test metadata key
 	metadataKey := keyOfMetadata("2023-01-02")
