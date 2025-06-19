@@ -5,9 +5,10 @@ go 1.24.2
 toolchain go1.24.4
 
 require (
+	github.com/kelindar/async v1.3.0
 	github.com/kelindar/s3 v0.0.3
 	github.com/klauspost/compress v1.18.0
-	github.com/stretchr/testify v1.9.0
+	github.com/stretchr/testify v1.10.0
 	github.com/weaviate/sroar v0.0.10
 )
 

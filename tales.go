@@ -8,10 +8,12 @@ import (
 	"encoding/binary"
 	"fmt"
 	"iter"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/kelindar/async"
 	"github.com/kelindar/tales/internal/buffer"
 	"github.com/kelindar/tales/internal/cache"
 	"github.com/kelindar/tales/internal/codec"
@@ -49,6 +51,8 @@ type Service struct {
 	codec    *codec.Codec
 	metaLRU  *cache.LRU[string, *codec.Metadata]
 	commands chan command
+	jobs     chan async.Task[iter.Seq[codec.LogEntry]]
+	consumer async.Task[iter.Seq[codec.LogEntry]]
 	wg       sync.WaitGroup
 	cancel   context.CancelFunc
 	closed   int32 // atomic flag
@@ -93,8 +97,12 @@ func New(bucket, region string, opts ...Option) (*Service, error) {
 		codec:    codecInstance,
 		metaLRU:  cache.NewLRU[string, *codec.Metadata](cfg.CacheSize),
 		commands: make(chan command, cfg.BufferSize),
+		jobs:     make(chan async.Task[iter.Seq[codec.LogEntry]], cfg.BufferSize),
 		cancel:   cancel,
 	}
+
+	// Start worker pool for async downloads
+	logger.consumer = async.Consume(ctx, runtime.NumCPU(), logger.jobs)
 
 	// Start the background goroutine
 	logger.wg.Add(1)
@@ -150,6 +158,10 @@ func (l *Service) Close() error {
 
 	// Flush pending events before shutting down
 	l.flush()
+
+	// Stop worker pool
+	close(l.jobs)
+	l.consumer.Outcome()
 
 	// Signal the run loop to exit and wait for it to finish
 	close(l.commands)
