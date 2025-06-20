@@ -6,6 +6,7 @@ package tales
 import (
 	"context"
 	"fmt"
+	"github.com/kelindar/async"
 	"iter"
 	"time"
 
@@ -58,38 +59,30 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 	fromSec := uint32(from.Unix())
 	toSec := uint32(to.Unix())
 
-	// For each chunk, load all relevant bitmaps and compute intersection
+	// Launch chunk tasks concurrently
+	var tasks []async.Task[iter.Seq[codec.LogEntry]]
 	for _, chunk := range meta.Chunks {
-		// Skip chunks that don't overlap with query time range
 		if !chunk.Between(fromSec, toSec) {
 			continue
 		}
 		chunkKey := keyOfChunk(seq.FormatDate(day), chunk.Offset())
-		var index *sroar.Bitmap
-		for _, a := range actors {
-			idx, ok := chunk.Actors[a]
-			if !ok || uint32(idx[0]) < t0 || uint32(idx[0]) > t1 {
-				index = nil
-				break
-			}
+		task := l.chunkTask(ctx, chunkKey, chunk, actors, t0, t1)
+		l.jobs <- task
+		tasks = append(tasks, task)
+	}
 
-			bitmap, err := l.loadBitmap(ctx, chunkKey, idx)
-			if err != nil {
-				index = nil
-				break
-			}
-
-			switch {
-			case index == nil:
-				index = bitmap
-			case !index.IsEmpty():
-				index.And(bitmap)
-			}
+	// Consume results in order
+	for i, task := range tasks {
+		entries, err := task.Outcome()
+		if err != nil {
+			continue
 		}
-
-		// Query log section with intersection bitmap
-		if index != nil && !index.IsEmpty() {
-			if !l.queryChunk(ctx, chunkKey, chunk, *index, day, from, to, yield) {
+		for entry := range entries {
+			ts := seq.TimeOf(entry.ID(), day)
+			if !ts.Before(from) && !ts.After(to) && !yield(ts, entry.Text()) {
+				for _, t := range tasks[i+1:] {
+					t.Cancel()
+				}
 				return false
 			}
 		}
@@ -191,4 +184,36 @@ func (l *Service) rangeChunks(ctx context.Context, chunkKey string, chunk codec.
 			buffer = buffer[size:]
 		}
 	}, nil
+}
+
+// chunkTask prepares a task that downloads bitmaps and data for a single chunk.
+func (l *Service) chunkTask(ctx context.Context, chunkKey string, chunk codec.ChunkEntry, actors []uint32, t0, t1 uint32) async.Task[iter.Seq[codec.LogEntry]] {
+	return async.NewTask(func(ctx context.Context) (iter.Seq[codec.LogEntry], error) {
+		var index *sroar.Bitmap
+		for _, a := range actors {
+			idx, ok := chunk.Actors[a]
+			if !ok || uint32(idx[0]) < t0 || uint32(idx[0]) > t1 {
+				index = nil
+				break
+			}
+
+			bitmap, err := l.loadBitmap(ctx, chunkKey, idx)
+			if err != nil {
+				return nil, err
+			}
+
+			switch {
+			case index == nil:
+				index = bitmap
+			case !index.IsEmpty():
+				index.And(bitmap)
+			}
+		}
+
+		if index == nil || index.IsEmpty() {
+			return func(yield func(codec.LogEntry) bool) {}, nil
+		}
+
+		return l.rangeChunks(ctx, chunkKey, chunk, index)
+	})
 }

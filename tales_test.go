@@ -27,18 +27,16 @@ func BenchmarkLog(b *testing.B) {
 
 	count := 0
 	start := time.Now()
-	for time.Now().Sub(start) < time.Second {
+	for time.Since(start) < time.Second {
 		const interval = 50 * time.Millisecond
-		for i := time.Now(); time.Now().Sub(i) < interval; {
+		for i := time.Now(); time.Since(i) < interval; {
 			logger.Log("hello world", 1)
 			count++
 		}
 
 		logger.flush()
 	}
-
-	b.N = count
-	b.ReportMetric(float64(count)/time.Now().Sub(start).Seconds(), "tps")
+	b.ReportMetric(float64(count)/time.Since(start).Seconds(), "tps")
 }
 
 /*
@@ -60,9 +58,9 @@ func BenchmarkQuery(b *testing.B) {
 	b.ResetTimer()
 	count := 0
 	start := time.Now()
-	for time.Now().Sub(start) < time.Second {
+	for time.Since(start) < time.Second {
 		const interval = 50 * time.Millisecond
-		for i := time.Now(); time.Now().Sub(i) < interval; {
+		for i := time.Now(); time.Since(i) < interval; {
 			for range logger.Query(time.Now().Add(-1*time.Hour), time.Now().Add(1*time.Hour), 1) {
 				// Consume the iterator
 			}
@@ -70,8 +68,7 @@ func BenchmarkQuery(b *testing.B) {
 		}
 	}
 
-	b.N = count
-	b.ReportMetric(float64(count)/time.Now().Sub(start).Seconds(), "qps")
+	b.ReportMetric(float64(count)/time.Since(start).Seconds(), "qps")
 }
 
 func TestIntegration(t *testing.T) {
