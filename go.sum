@@ -4,8 +4,8 @@ github.com/kelindar/bitmap v1.5.3 h1:/ty1SvbLE5ZKO4ToFNeXe3P3RrQsoj4a0x5gZNp5Vzo
 github.com/kelindar/bitmap v1.5.3/go.mod h1:j3qZjxH9s4OtvsnFTP2bmPkjqil9Y2xQlxPYHexasEA=
 github.com/kelindar/roaring v0.0.4 h1:WB8EKtbO+RP3bnXVtaArLiTLQDOGkdsDRm5T+hw/nlE=
 github.com/kelindar/roaring v0.0.4/go.mod h1:rVjbn421GwJsYSGCg5hBK0A9Eth4SpdANUzOeDn5MNA=
-github.com/kelindar/s3 v0.1.0 h1:p6G/93vo3Cb3Cp7tcoCD0zrXIaSSohakRQqPnReo+Pg=
-github.com/kelindar/s3 v0.1.0/go.mod h1:O2/uN3efPfCUVNmNPHNBY242Bm7LIu+RHQ7bDU5iUXs=
+github.com/kelindar/s3 v0.1.1 h1:m8v/YlRjyrJ2PGc4kSYwpmj/qFXytsB3VB+CWcjVv84=
+github.com/kelindar/s3 v0.1.1/go.mod h1:O2/uN3efPfCUVNmNPHNBY242Bm7LIu+RHQ7bDU5iUXs=
 github.com/kelindar/simd v1.1.2 h1:KduKb+M9cMY2HIH8S/cdJyD+5n5EGgq+Aeeleos55To=
 github.com/kelindar/simd v1.1.2/go.mod h1:inq4DFudC7W8L5fhxoeZflLRNpWSs0GNx6MlWFvuvr0=
 github.com/klauspost/compress v1.18.0 h1:c/Cqfb0r+Yi+JtIEq73FWXVkRonBlf0CRNYc8Zttxdo=
