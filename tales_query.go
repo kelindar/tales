@@ -9,9 +9,9 @@ import (
 	"iter"
 	"time"
 
+	"github.com/kelindar/roaring"
 	"github.com/kelindar/tales/internal/codec"
 	"github.com/kelindar/tales/internal/seq"
-	"github.com/weaviate/sroar"
 )
 
 // queryWarm queries the in-memory buffer for entries.
@@ -60,12 +60,13 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 
 	// For each chunk, load all relevant bitmaps and compute intersection
 	for _, chunk := range meta.Chunks {
-		// Skip chunks that don't overlap with query time range
 		if !chunk.Between(fromSec, toSec) {
 			continue
 		}
+
 		chunkKey := keyOfChunk(seq.FormatDate(day), chunk.Offset())
-		var index *sroar.Bitmap
+
+		var index *roaring.Bitmap
 		for _, a := range actors {
 			idx, ok := chunk.Actors[a]
 			if !ok || uint32(idx[0]) < t0 || uint32(idx[0]) > t1 {
@@ -82,14 +83,14 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 			switch {
 			case index == nil:
 				index = bitmap
-			case !index.IsEmpty():
+			case index.Count() > 0:
 				index.And(bitmap)
 			}
 		}
 
 		// Query log section with intersection bitmap
-		if index != nil && !index.IsEmpty() {
-			if !l.queryChunk(ctx, chunkKey, chunk, *index, day, from, to, yield) {
+		if index != nil && index.Count() > 0 {
+			if !l.queryChunk(ctx, chunkKey, chunk, index, day, from, to, yield) {
 				return false
 			}
 		}
@@ -99,7 +100,7 @@ func (l *Service) queryDay(ctx context.Context, actors []uint32, day time.Time, 
 }
 
 // loadBitmap downloads and decodes a single bitmap for a given index entry.
-func (l *Service) loadBitmap(ctx context.Context, key string, entry codec.IndexEntry) (*sroar.Bitmap, error) {
+func (l *Service) loadBitmap(ctx context.Context, key string, entry codec.IndexEntry) (*roaring.Bitmap, error) {
 	i0 := int64(entry[1])
 	i1 := i0 + int64(entry[2]) - 1
 
@@ -109,27 +110,26 @@ func (l *Service) loadBitmap(ctx context.Context, key string, entry codec.IndexE
 	}
 
 	// Bitmaps are stored uncompressed, so just deserialize
-	bm := sroar.FromBuffer(data)
+	bm := roaring.FromBytes(data)
 	return bm, nil
 }
 
 // queryChunk queries a specific log chunk for sequence IDs using an optimized bitmap iterator.
 // This function efficiently filters log entries by leveraging the sorted nature of both the log entries
 // and the bitmap, avoiding unnecessary bitmap lookups for entries that don't match.
-func (l *Service) queryChunk(ctx context.Context, chunkKey string, chunk codec.ChunkEntry, sids sroar.Bitmap, day, from, to time.Time, yield func(time.Time, string) bool) bool {
-	if sids.IsEmpty() {
+func (l *Service) queryChunk(ctx context.Context, chunkKey string, chunk codec.ChunkEntry, sids *roaring.Bitmap, day, from, to time.Time, yield func(time.Time, string) bool) bool {
+	if sids.Count() == 0 {
 		return true
 	}
 
-	entries, err := l.rangeChunks(ctx, chunkKey, chunk, &sids)
+	entries, err := l.rangeChunks(ctx, chunkKey, chunk, sids)
 	if err != nil {
 		return true // Skip chunks that fail to process
 	}
 
 	// Process only the filtered entries
 	for entry := range entries {
-		id := entry.ID()
-		ts := seq.TimeOf(id, day)
+		ts := entry.Time(day)
 		if !ts.Before(from) && !ts.After(to) && !yield(ts, entry.Text()) {
 			return false // Stop iteration
 		}
@@ -140,8 +140,8 @@ func (l *Service) queryChunk(ctx context.Context, chunkKey string, chunk codec.C
 
 // rangeChunks downloads the log section from a chunk file, decompresses it, and returns
 // an iterator over log entries that are filtered using an optimized bitmap iterator merge algorithm.
-func (l *Service) rangeChunks(ctx context.Context, chunkKey string, chunk codec.ChunkEntry, sids *sroar.Bitmap) (iter.Seq[codec.LogEntry], error) {
-	if chunk.DataSize() == 0 || sids.IsEmpty() {
+func (l *Service) rangeChunks(ctx context.Context, chunkKey string, chunk codec.ChunkEntry, sids *roaring.Bitmap) (iter.Seq[codec.LogEntry], error) {
+	if chunk.DataSize() == 0 || sids.Count() == 0 {
 		return func(yield func(codec.LogEntry) bool) {}, nil // Empty iterator
 	}
 
@@ -159,36 +159,34 @@ func (l *Service) rangeChunks(ctx context.Context, chunkKey string, chunk codec.
 	}
 
 	return func(yield func(codec.LogEntry) bool) {
-		iter := sids.NewIterator()
-		idx := iter.Next()
-		for len(buffer) > 4 && idx != 0 {
-			entry := codec.LogEntry(buffer)
-			size := entry.Size()
-			if size == 0 || uint32(len(buffer)) < size {
-				return // Invalid size or not enough data, stop iteration
-			}
-
-			// Advance bitmap iterator until we find a target >= current entry ID
-			entryID := uint64(entry.ID())
-			for idx != 0 && idx < entryID {
-				idx = iter.Next()
-			}
-
-			// If we've exhausted all targets, we're done
-			if idx == 0 {
-				return
-			}
-
-			// If current entry matches current target, yield it
-			if entryID == idx {
-				if !yield(entry[:size]) {
-					return // Stop iteration if yield returns false
+		sids.Range(func(sidToFind uint32) bool {
+			for len(buffer) > 4 {
+				entry := codec.LogEntry(buffer)
+				size := entry.Size()
+				if size == 0 || uint32(len(buffer)) < size {
+					return false // Invalid size or not enough data, stop iteration
 				}
-				idx = iter.Next()
-			}
 
-			// Always advance buffer after processing each entry
-			buffer = buffer[size:]
-		}
+				entryID := entry.ID()
+				if entryID < sidToFind {
+					buffer = buffer[size:] // Advance buffer
+					continue               // Continue scanning buffer for current sid
+				}
+
+				// If we found the entry, yield it. If we overshot, the entry is not
+				// in the buffer, so we just move to the next sid.
+				if entryID == sidToFind {
+					if !yield(entry[:size]) {
+						return false // Stop iteration if yield returns false
+					}
+					buffer = buffer[size:] // Advance buffer
+				}
+
+				// We either found the entry and yielded it, or we've overshot.
+				// In both cases, we are done with this sid and should get the next one.
+				return true // Continue to next sid
+			}
+			return false // Buffer is exhausted, stop iteration
+		})
 	}, nil
 }

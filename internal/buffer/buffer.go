@@ -8,19 +8,19 @@ import (
 	"slices"
 	"time"
 
+	"github.com/kelindar/roaring"
 	"github.com/kelindar/tales/internal/codec"
-	"github.com/weaviate/sroar"
 )
 
 // Buffer represents the in-memory buffer for the current chunk.
 type Buffer struct {
-	codec   *codec.Codec             // Codec for compression
-	data    []byte                   // Raw concatenated log entries
-	index   map[uint32]*sroar.Bitmap // Actor ID -> sequence IDs bitmap
-	length  int                      // Number of entries in buffer
-	maxSize int                      // Maximum number of entries
-	start   time.Time                // Start time of the buffer
-	time    [2]uint32                // Time bounds [min, max] (Unix seconds)
+	codec   *codec.Codec               // Codec for compression
+	data    []byte                     // Raw concatenated log entries
+	index   map[uint32]*roaring.Bitmap // Actor ID -> sequence IDs bitmap
+	length  int                        // Number of entries in buffer
+	maxSize int                        // Maximum number of entries
+	start   time.Time                  // Start time of the buffer
+	time    [2]uint32                  // Time bounds [min, max] (Unix seconds)
 }
 
 // New creates a new buffer with the specified maximum size.
@@ -28,7 +28,7 @@ func New(maxSize int, codec *codec.Codec) *Buffer {
 	return &Buffer{
 		codec:   codec,
 		data:    make([]byte, 0, maxSize*100), // Estimate ~100 bytes per entry
-		index:   make(map[uint32]*sroar.Bitmap),
+		index:   make(map[uint32]*roaring.Bitmap),
 		length:  0,
 		maxSize: maxSize,
 		start:   time.Now(),
@@ -65,10 +65,10 @@ func (b *Buffer) Add(entry codec.LogEntry, entryTime time.Time) bool {
 	for actorID := range entry.Actors() {
 		bitmap, ok := b.index[actorID]
 		if !ok || bitmap == nil {
-			bitmap = sroar.NewBitmap()
+			bitmap = roaring.New()
 			b.index[actorID] = bitmap
 		}
-		bitmap.Set(uint64(entry.ID()))
+		bitmap.Set(entry.ID())
 	}
 
 	return true
@@ -172,7 +172,8 @@ func (b *Buffer) Flush() (Flush, error) {
 		if bm == nil {
 			continue
 		}
-		bitmapData := bm.ToBuffer()
+
+		bitmapData := bm.ToBytes()
 
 		// Do not compress bitmap, just store raw bytes
 		index = append(index, Index{
@@ -205,7 +206,7 @@ func (b *Buffer) reset() {
 	b.time[0] = 0
 	b.time[1] = 0
 	for k := range b.index {
-		b.index[k] = sroar.NewBitmap()
+		b.index[k].Clear()
 	}
 	b.start = time.Now()
 }
