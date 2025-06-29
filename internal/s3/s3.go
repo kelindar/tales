@@ -62,7 +62,7 @@ func NewClient(cfg Config) (client Client, err error) {
 	case cfg.Key != nil:
 		key = cfg.Key
 	case cfg.Bucket != "":
-		key, err = aws.AmbientKey(cfg.Service, s3lib.DeriveForBucket(cfg.Bucket))
+		key, err = aws.AmbientKey(cfg.Service, cfg.Region, s3lib.DeriveForBucket(cfg.Bucket))
 	default:
 		err = fmt.Errorf("region or key is required")
 	}

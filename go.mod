@@ -6,7 +6,7 @@ toolchain go1.24.4
 
 require (
 	github.com/kelindar/roaring v0.0.4
-	github.com/kelindar/s3 v0.0.3
+	github.com/kelindar/s3 v0.1.0
 	github.com/klauspost/compress v1.18.0
 	github.com/stretchr/testify v1.9.0
 )
