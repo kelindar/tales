@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kelindar/roaring"
 	s3mock "github.com/kelindar/s3/mock"
 	"github.com/kelindar/tales/internal/codec"
 	"github.com/kelindar/tales/internal/s3"
@@ -206,6 +207,106 @@ func testQueryDownloadsOnce(t *testing.T) {
 func TestKeys(t *testing.T) {
 	assert.Equal(t, "2023-01-02/metadata.json", keyOfMetadata("2023-01-02"))
 	assert.Equal(t, "2023-01-02/5.log", keyOfChunk("2023-01-02", 5))
+}
+
+func TestGuards(t *testing.T) {
+	logger, err := newService()
+	require.NoError(t, err)
+
+	from := time.Now().Add(-time.Hour)
+	to := time.Now().Add(time.Hour)
+
+	for range logger.Query(from, to) {
+		t.Fatal("expected no results without actors")
+	}
+
+	require.NoError(t, logger.Close())
+	for range logger.Query(from, to, 1) {
+		t.Fatal("expected no results after close")
+	}
+}
+
+func TestBufferOverflow(t *testing.T) {
+	mockS3 := s3mock.New("test-bucket", "us-east-1")
+	logger, err := New(
+		"test-bucket",
+		"us-east-1",
+		WithInterval(time.Minute),
+		WithBuffer(1),
+		WithClient(func(config s3.Config) (s3.Client, error) {
+			return s3.NewMockClient(mockS3, config)
+		}),
+	)
+	require.NoError(t, err)
+	defer logger.Close()
+
+	require.NoError(t, logger.Log("one", 1))
+	require.NoError(t, logger.Log("two", 1)) // forces flush when buffer is full
+
+	from := time.Now().Add(-time.Hour)
+	to := time.Now().Add(time.Hour)
+	var texts []string
+	for _, text := range logger.Query(from, to, 1) {
+		texts = append(texts, text)
+	}
+	assert.Contains(t, texts, "two")
+}
+
+func TestQueryHelpers(t *testing.T) {
+	t.Run("chunkActorIndexes empty data", func(t *testing.T) {
+		chunk := codec.NewChunkEntry(0, 0, 0, 0, 0, nil)
+		_, _, ok := chunkActorIndexes(chunk, []uint32{1}, 0, 100)
+		assert.False(t, ok)
+	})
+
+	t.Run("intersectIndexes out of bounds", func(t *testing.T) {
+		indexes := []codec.IndexEntry{codec.NewIndexEntry(0, 0, 100)}
+		assert.Nil(t, intersectIndexes([]byte{1, 2, 3}, indexes, 0))
+	})
+
+	t.Run("rangeChunks empty", func(t *testing.T) {
+		logger, err := newService()
+		require.NoError(t, err)
+		defer logger.Close()
+
+		sids := roaring.New()
+		sids.Set(1)
+		seq, err := logger.rangeChunks(nil, sids)
+		require.NoError(t, err)
+		count := 0
+		for range seq {
+			count++
+		}
+		assert.Equal(t, 0, count)
+	})
+
+	t.Run("scanForSID stop and invalid", func(t *testing.T) {
+		entry, err := codec.NewLogEntry(1, "hi", []uint32{1})
+		require.NoError(t, err)
+		buf := []byte(entry)
+
+		assert.False(t, scanForSID(&buf, 1, func(codec.LogEntry) bool { return false }))
+
+		bad := []byte{1, 0, 0, 0, 0, 0} // size 0
+		assert.False(t, scanForSID(&bad, 1, func(codec.LogEntry) bool { return true }))
+	})
+
+	t.Run("queryChunk stop early", func(t *testing.T) {
+		logger, err := newService()
+		require.NoError(t, err)
+		defer logger.Close()
+
+		require.NoError(t, logger.Log("a", 1))
+		require.NoError(t, logger.Log("b", 1))
+		logger.flush()
+
+		count := 0
+		for range logger.Query(time.Now().Add(-time.Hour), time.Now().Add(time.Hour), 1) {
+			count++
+			break
+		}
+		assert.Equal(t, 1, count)
+	})
 }
 
 func TestClose(t *testing.T) {

@@ -76,6 +76,8 @@ func TestQuery(t *testing.T) {
 		"by actor":     testQueryByActor,
 		"inclusive to": testQueryInclusiveTo,
 		"all actors":   testQueryActors,
+		"stop early":   testQueryStopEarly,
+		"corrupt data": testQueryCorrupt,
 	}
 	for name, fn := range tests {
 		t.Run(name, fn)
@@ -193,4 +195,38 @@ func testQueryActors(t *testing.T) {
 		count++
 	}
 	assert.Equal(t, 0, count)
+}
+
+func testQueryStopEarly(t *testing.T) {
+	c, _ := codec.NewCodec()
+	buf := New(10, c)
+	dayStart := time.Now().UTC().Truncate(24 * time.Hour)
+
+	for i := uint32(1); i <= 3; i++ {
+		entry, _ := codec.NewLogEntry(i, "x", []uint32{1})
+		buf.Add(entry, dayStart.Add(time.Duration(i)*time.Minute))
+	}
+
+	count := 0
+	for range buf.QueryActors(dayStart, dayStart, dayStart.Add(time.Hour), []uint32{1}) {
+		count++
+		break
+	}
+	assert.Equal(t, 1, count)
+}
+
+func testQueryCorrupt(t *testing.T) {
+	c, _ := codec.NewCodec()
+	buf := New(10, c)
+	dayStart := time.Now().UTC().Truncate(24 * time.Hour)
+
+	entry, _ := codec.NewLogEntry(1, "ok", []uint32{1})
+	buf.Add(entry, dayStart)
+	buf.data = append(buf.data, 0, 0, 0, 0, 0) // truncated trailing entry
+
+	count := 0
+	for range buf.QueryActors(dayStart, dayStart, dayStart.Add(time.Hour), []uint32{1}) {
+		count++
+	}
+	assert.Equal(t, 1, count)
 }
