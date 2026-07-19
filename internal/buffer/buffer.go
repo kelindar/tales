@@ -55,11 +55,6 @@ func (b *Buffer) Add(day time.Time, entry codec.LogEntry) error {
 	return nil
 }
 
-type Binary struct {
-	Compressed []byte
-	RawSize    int64
-}
-
 type Index struct {
 	Actor uint32
 	Data  []byte
@@ -68,7 +63,7 @@ type Index struct {
 type Batch struct {
 	Day     time.Time
 	Raw     []byte
-	Data    Binary
+	Data    []byte
 	Indexes []Index
 	Entries uint32
 	Time    [2]uint32
@@ -91,7 +86,7 @@ func (b *Buffer) Take() (*Batch, error) {
 	for _, actor := range actors {
 		indexes = append(indexes, Index{Actor: actor, Data: b.index[actor].ToBytes()})
 	}
-	batch := &Batch{Day: b.day, Raw: b.data, Data: Binary{Compressed: compressed, RawSize: int64(len(b.data))}, Indexes: indexes, Entries: uint32(b.count), Time: b.time}
+	batch := &Batch{Day: b.day, Raw: b.data, Data: compressed, Indexes: indexes, Entries: uint32(b.count), Time: b.time}
 	b.data = make([]byte, 0, 8<<20)
 	b.index = make(map[uint32]*roaring.Bitmap)
 	b.count = 0

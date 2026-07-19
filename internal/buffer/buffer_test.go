@@ -38,7 +38,7 @@ func TestBatchSnapshot(t *testing.T) {
 	require.True(t, bitmap.Contains(1))
 	require.Zero(t, buf.Size())
 
-	raw, err := c.Decompress(batch.Data.Compressed)
+	raw, err := c.Decompress(batch.Data)
 	require.NoError(t, err)
 	_, err = codec.ValidateEntries(raw, 2)
 	require.NoError(t, err)

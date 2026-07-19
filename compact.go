@@ -56,12 +56,12 @@ func (l *Service) Compact(ctx context.Context, value time.Time) error {
 	}
 	var chunks []sourceChunk
 	var total uint64
-	for _, found := range manifests {
-		for _, chunk := range found.manifest.Chunks {
+	for _, manifest := range manifests {
+		for _, chunk := range manifest.Chunks {
 			if total+uint64(chunk.Entries) > uint64(math.MaxUint32)+1 {
 				return fmt.Errorf("daily ordinal capacity exceeded")
 			}
-			chunks = append(chunks, sourceChunk{writer: found.writer, chunk: chunk, key: keyOfChunk(dayName, found.writer, uint64(chunk.Sequence)), base: total})
+			chunks = append(chunks, sourceChunk{writer: manifest.Writer, chunk: chunk, key: keyOfChunk(dayName, manifest.Writer, uint64(chunk.Sequence)), base: total})
 			total += uint64(chunk.Entries)
 		}
 	}

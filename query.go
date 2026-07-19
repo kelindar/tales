@@ -19,14 +19,9 @@ import (
 	"github.com/kelindar/tales/internal/s3"
 )
 
-type writerManifest struct {
-	writer   string
-	manifest *codec.Manifest
-}
-
 type discoveryCache struct {
 	at        time.Time
-	manifests []writerManifest
+	manifests []*codec.Manifest
 }
 
 type writerCutoff struct {
@@ -36,7 +31,6 @@ type writerCutoff struct {
 
 type localChunk struct {
 	day      time.Time
-	writer   string
 	sequence uint64
 	entries  uint32
 	raw      []byte
@@ -116,7 +110,7 @@ func (l *Service) queryDay(ctx context.Context, snapshot querySnapshot, day, fro
 	}
 	for _, local := range snapshot.local {
 		if local.day.Equal(day) {
-			localRefs, err := collectRaw(local.raw, local.entries, day, from, to, actors, local.writer, local.sequence, nil)
+			localRefs, err := collectRaw(local.raw, local.entries, day, from, to, actors, l.config.WriterID, local.sequence, nil)
 			if err != nil {
 				return nil, fmt.Errorf("query local snapshot: %w", err)
 			}
@@ -134,10 +128,10 @@ func (l *Service) queryWriterDay(ctx context.Context, snapshot querySnapshot, da
 	}
 	fromMillis, toMillis := queryMillis(day, from, to)
 	var refs []eventRef
-	for _, found := range manifests {
-		for _, chunk := range found.manifest.Chunks {
+	for _, manifest := range manifests {
+		for _, chunk := range manifest.Chunks {
 			sequence := uint64(chunk.Sequence)
-			if found.writer == l.config.WriterID {
+			if manifest.Writer == l.config.WriterID {
 				if cutoff, ok := snapshot.cutoffs[dayName]; ok && (!cutoff.committed || sequence > cutoff.sequence) {
 					continue
 				}
@@ -145,14 +139,14 @@ func (l *Service) queryWriterDay(ctx context.Context, snapshot querySnapshot, da
 			if !chunk.Between(fromMillis, toMillis) {
 				continue
 			}
-			selected, err := l.chunkOrdinals(ctx, keyOfChunk(dayName, found.writer, sequence), chunk.ETag, chunk.Actors, uint64(chunk.Entries), actors)
+			selected, err := l.chunkOrdinals(ctx, keyOfChunk(dayName, manifest.Writer, sequence), chunk.ETag, chunk.Actors, uint64(chunk.Entries), actors)
 			if err != nil {
 				return nil, err
 			}
 			if selected == nil || selected.Count() == 0 {
 				continue
 			}
-			compressed, err := l.s3Client.DownloadRange(ctx, keyOfChunk(dayName, found.writer, sequence), chunk.ETag, chunk.Data.Offset, chunk.Data.Size)
+			compressed, err := l.s3Client.DownloadRange(ctx, keyOfChunk(dayName, manifest.Writer, sequence), chunk.ETag, chunk.Data.Offset, chunk.Data.Size)
 			if err != nil {
 				return nil, err
 			}
@@ -160,7 +154,7 @@ func (l *Service) queryWriterDay(ctx context.Context, snapshot querySnapshot, da
 			if err != nil {
 				return nil, fmt.Errorf("decompress writer chunk: %w", err)
 			}
-			chunkRefs, err := collectRaw(raw, chunk.Entries, day, from, to, actors, found.writer, sequence, selected)
+			chunkRefs, err := collectRaw(raw, chunk.Entries, day, from, to, actors, manifest.Writer, sequence, selected)
 			if err != nil {
 				return nil, err
 			}
@@ -257,7 +251,7 @@ func collectRaw(raw []byte, expected uint32, day, from, to time.Time, actors []u
 	return refs, nil
 }
 
-func (l *Service) discoverManifests(ctx context.Context, day time.Time) ([]writerManifest, error) {
+func (l *Service) discoverManifests(ctx context.Context, day time.Time) ([]*codec.Manifest, error) {
 	key := dayKey(day)
 	now := l.config.now().UTC()
 	historical := day.Before(dayOf(now).AddDate(0, 0, -1))
@@ -285,13 +279,13 @@ func (l *Service) discoverManifests(ctx context.Context, day time.Time) ([]write
 	}
 	sort.Strings(writers)
 	writers = slices.Compact(writers)
-	manifests := make([]writerManifest, 0, len(writers))
+	manifests := make([]*codec.Manifest, 0, len(writers))
 	for _, writer := range writers {
 		manifest, err := l.downloadManifest(ctx, key, writer)
 		if err != nil {
 			return nil, err
 		}
-		manifests = append(manifests, writerManifest{writer: writer, manifest: manifest})
+		manifests = append(manifests, manifest)
 	}
 	l.cacheMu.Lock()
 	l.discovery[key] = discoveryCache{at: now, manifests: manifests}

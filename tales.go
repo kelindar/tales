@@ -75,15 +75,11 @@ type snapshotResult struct {
 	err      error
 }
 
-type closeCmd struct {
-	reply chan error
-}
-
 type command struct {
 	log      *logCmd
 	sync     *syncCmd
 	snapshot *snapshotCmd
-	close    *closeCmd
+	close    chan error
 }
 
 // Service is a distributed S3-backed event log owned by one writer ID.
@@ -256,7 +252,7 @@ func (l *Service) Close() error {
 
 	l.active.Wait()
 	reply := make(chan error, 1)
-	l.commands <- command{close: &closeCmd{reply: reply}}
+	l.commands <- command{close: reply}
 	if err := <-reply; err != nil {
 		l.lifecycle.Lock()
 		l.closing = false
@@ -292,7 +288,7 @@ func (l *Service) run() {
 				cmd.snapshot.reply <- snapshotResult{snapshot: snapshot, err: err}
 			case cmd.close != nil:
 				err := l.flushState(context.Background(), &state)
-				cmd.close.reply <- err
+				cmd.close <- err
 				if err == nil {
 					return
 				}

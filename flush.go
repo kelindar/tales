@@ -114,7 +114,7 @@ func (l *Service) uploadPendingChunk(ctx context.Context, day string, pending *p
 		actors[index.Actor] = codec.Range{Offset: offset, Size: int64(len(index.Data))}
 		offset += int64(len(index.Data))
 	}
-	reader := newLogReader(pending.batch.Indexes, pending.batch.Data.Compressed)
+	reader := newLogReader(pending.batch.Indexes, pending.batch.Data)
 	key := keyOfChunk(day, l.config.WriterID, pending.sequence)
 	etag, err := l.s3Client.UploadReader(ctx, key, reader, reader.Size())
 	if err != nil {
@@ -125,7 +125,7 @@ func (l *Service) uploadPendingChunk(ctx context.Context, day string, pending *p
 		Entries:    pending.batch.Entries,
 		Time:       pending.batch.Time,
 		BitmapSize: offset,
-		Data:       codec.Range{Offset: offset, Size: int64(len(pending.batch.Data.Compressed))},
+		Data:       codec.Range{Offset: offset, Size: int64(len(pending.batch.Data))},
 		Size:       reader.Size(),
 		ETag:       etag,
 		Actors:     actors,
@@ -208,7 +208,7 @@ func (l *Service) snapshot(ctx context.Context, state *writerState) (querySnapsh
 	}
 	if pending := state.pending; pending != nil {
 		day := dayKey(pending.batch.Day)
-		snapshot.local = append(snapshot.local, localChunk{day: pending.batch.Day, writer: l.config.WriterID, sequence: pending.sequence, entries: pending.batch.Entries, raw: pending.batch.Raw})
+		snapshot.local = append(snapshot.local, localChunk{day: pending.batch.Day, sequence: pending.sequence, entries: pending.batch.Entries, raw: pending.batch.Raw})
 		if _, ok := snapshot.cutoffs[day]; !ok {
 			cutoff := writerCutoff{}
 			if pending.sequence > 0 {
@@ -227,7 +227,7 @@ func (l *Service) snapshot(ctx context.Context, state *writerState) (querySnapsh
 		if state.pending != nil && state.pending.batch.Day.Equal(day) {
 			sequence = state.pending.sequence + 1
 		}
-		snapshot.local = append(snapshot.local, localChunk{day: day, writer: l.config.WriterID, sequence: sequence, entries: entries, raw: raw})
+		snapshot.local = append(snapshot.local, localChunk{day: day, sequence: sequence, entries: entries, raw: raw})
 		if _, ok := snapshot.cutoffs[key]; !ok {
 			cutoff := writerCutoff{}
 			if sequence > 0 {

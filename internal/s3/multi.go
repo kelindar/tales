@@ -96,13 +96,6 @@ func (m *MultiReader) ReadAt(p []byte, off int64) (n int, err error) {
 	return totalRead, nil
 }
 
-// Read implements io.Reader interface for compatibility.
-func (m *MultiReader) Read(p []byte) (n int, err error) {
-	// This is a simple implementation that reads from the beginning
-	// For a full implementation, we'd need to track current position
-	return m.ReadAt(p, 0)
-}
-
 // Size returns the total size of all sections combined.
 func (m *MultiReader) Size() int64 {
 	return m.size
