@@ -1,232 +1,59 @@
-// Copyright (c) Roman Atachiants and contributors. All rights reserved.
-// Licensed under the MIT license. See LICENSE file in the project root
-
 package buffer
 
 import (
+	"bytes"
 	"testing"
 	"time"
 
+	"github.com/kelindar/roaring"
 	"github.com/kelindar/tales/internal/codec"
-	"github.com/kelindar/tales/internal/seq"
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestNew(t *testing.T) {
-	c, _ := codec.NewCodec()
-	buf := New(100, c)
-
-	assert.NotNil(t, buf)
-	assert.Equal(t, 100, buf.maxSize)
-	assert.NotNil(t, buf.codec)
-	assert.NotNil(t, buf.data)
-	assert.NotNil(t, buf.index)
-	assert.Equal(t, 0, buf.length)
-}
-
-func TestAdd(t *testing.T) {
-	c, _ := codec.NewCodec()
+func TestBatchSnapshot(t *testing.T) {
+	c, err := codec.NewCodec()
+	require.NoError(t, err)
+	defer c.Close()
 	buf := New(2, c)
-	now := time.Now()
+	day := time.Date(2026, 7, 19, 0, 0, 0, 0, time.UTC)
+	first, _ := codec.NewLogEntry(10, "a", []uint32{9, 1})
+	second, _ := codec.NewLogEntry(10, "b", []uint32{1})
+	require.NoError(t, buf.Add(day, first))
+	require.Equal(t, day, buf.Day())
+	require.Positive(t, buf.Bytes())
+	require.NoError(t, buf.Add(day, second))
+	require.Error(t, buf.Add(day, first))
 
-	entry1, _ := codec.NewLogEntry(1, "test1", []uint32{10, 20})
-	entry2, _ := codec.NewLogEntry(2, "test2", []uint32{30})
-	entry3, _ := codec.NewLogEntry(3, "test3", []uint32{40})
+	_, snapshot, count := buf.Snapshot()
+	snapshot[0] = 0
+	require.NotEqual(t, snapshot[0], buf.data[0])
+	require.Equal(t, uint32(2), count)
 
-	assert.True(t, buf.Add(entry1, now))
-	assert.Equal(t, 1, buf.length)
-	assert.True(t, buf.Add(entry2, now.Add(time.Minute)))
-	assert.Equal(t, 2, buf.length)
-	assert.False(t, buf.Add(entry3, now.Add(2*time.Minute))) // Buffer is full
-	assert.Equal(t, 2, buf.length)
+	batch, err := buf.Take()
+	require.NoError(t, err)
+	require.Equal(t, uint32(2), batch.Entries)
+	require.Equal(t, [2]uint32{10, 10}, batch.Time)
+	require.Equal(t, []uint32{1, 9}, []uint32{batch.Indexes[0].Actor, batch.Indexes[1].Actor})
+	bitmap, err := roaring.ReadFrom(bytes.NewReader(batch.Indexes[0].Data))
+	require.NoError(t, err)
+	require.True(t, bitmap.Contains(0))
+	require.True(t, bitmap.Contains(1))
+	require.Zero(t, buf.Size())
+	require.Zero(t, buf.Bytes())
+	require.True(t, buf.Day().IsZero())
+
+	raw, err := c.Decompress(batch.Data)
+	require.NoError(t, err)
+	_, err = codec.ValidateEntries(raw, 2)
+	require.NoError(t, err)
 }
 
-func TestFlush(t *testing.T) {
+func TestBufferDayGuard(t *testing.T) {
 	c, _ := codec.NewCodec()
-	buf := New(10, c)
-	now := time.Now()
-
-	entry, _ := codec.NewLogEntry(1, "test", []uint32{10, 20})
-	buf.Add(entry, now)
-
-	flushResult, err := buf.Flush()
-	assert.NoError(t, err)
-
-	assert.True(t, flushResult.Data.UncompressedSize > 0)
-	assert.True(t, flushResult.Data.CompressedSize > 0)
-	assert.NotEmpty(t, flushResult.Data.CompressedData)
-
-	assert.Equal(t, uint32(now.Unix()), flushResult.Time[0])
-	assert.Equal(t, uint32(now.Unix()), flushResult.Time[1])
-
-	assert.Len(t, flushResult.Index, 2)
-	for _, index := range flushResult.Index {
-		assert.Contains(t, []uint32{10, 20}, index.ActorID)
-		assert.True(t, index.UncompressedSize > 0)
-		assert.True(t, index.CompressedSize > 0)
-		assert.NotEmpty(t, index.CompressedData)
-	}
-
-	assert.Equal(t, 0, buf.length)
-	assert.Empty(t, buf.data)
-}
-
-func TestQuery(t *testing.T) {
-	tests := map[string]func(*testing.T){
-		"by actor":     testQueryByActor,
-		"inclusive to": testQueryInclusiveTo,
-		"all actors":   testQueryActors,
-		"stop early":   testQueryStopEarly,
-		"corrupt data": testQueryCorrupt,
-	}
-	for name, fn := range tests {
-		t.Run(name, fn)
-	}
-}
-
-func testQueryByActor(t *testing.T) {
-	c, _ := codec.NewCodec()
-	buf := New(10, c)
-	dayStart := time.Now().UTC().Truncate(24 * time.Hour)
-
-	entry1, _ := codec.NewLogEntry(1, "test1", []uint32{10, 20})
-	entry2, _ := codec.NewLogEntry(2, "test2", []uint32{10, 30})
-	buf.Add(entry1, dayStart)
-	buf.Add(entry2, dayStart.Add(time.Minute))
-
-	results := buf.Query(10, dayStart, dayStart, dayStart.Add(time.Hour))
-	count := 0
-	for range results {
-		count++
-	}
-	assert.Equal(t, 2, count)
-
-	results = buf.Query(20, dayStart, dayStart, dayStart.Add(time.Hour))
-	entries := []codec.LogEntry{}
-	for entry := range results {
-		entries = append(entries, entry)
-	}
-	assert.Len(t, entries, 1)
-	assert.Equal(t, entry1.ID(), entries[0].ID())
-
-	results = buf.Query(30, dayStart, dayStart, dayStart.Add(time.Hour))
-	entries = entries[:0]
-	for entry := range results {
-		entries = append(entries, entry)
-	}
-	assert.Len(t, entries, 1)
-	assert.Equal(t, entry2.ID(), entries[0].ID())
-
-	results = buf.Query(99, dayStart, dayStart, dayStart.Add(time.Hour))
-	count = 0
-	for range results {
-		count++
-	}
-	assert.Equal(t, 0, count)
-}
-
-func testQueryInclusiveTo(t *testing.T) {
-	c, _ := codec.NewCodec()
-	buf := New(10, c)
-	dayStart := time.Now().UTC().Truncate(24 * time.Hour)
-	sg := seq.NewSequence(dayStart)
-
-	ts := dayStart.Add(10*time.Minute + 30*time.Second)
-	id := sg.Next(ts)
-	entry, _ := codec.NewLogEntry(id, "test", []uint32{1})
-	buf.Add(entry, ts)
-
-	results := buf.Query(1, dayStart, dayStart, ts)
-	count := 0
-	for range results {
-		count++
-	}
-	assert.Equal(t, 1, count)
-}
-
-func testQueryActors(t *testing.T) {
-	c, _ := codec.NewCodec()
-	buf := New(10, c)
-	dayStart := time.Now().UTC().Truncate(24 * time.Hour)
-
-	entry1, _ := codec.NewLogEntry(1, "test1", []uint32{10, 20})
-	entry2, _ := codec.NewLogEntry(2, "test2", []uint32{10, 30})
-	entry3, _ := codec.NewLogEntry(3, "test3", []uint32{10, 20, 30})
-	entry4, _ := codec.NewLogEntry(4, "test4", []uint32{40})
-	buf.Add(entry1, dayStart)
-	buf.Add(entry2, dayStart.Add(time.Minute))
-	buf.Add(entry3, dayStart.Add(2*time.Minute))
-	buf.Add(entry4, dayStart.Add(3*time.Minute))
-
-	results := buf.QueryActors(dayStart, dayStart, dayStart.Add(time.Hour), []uint32{10})
-	count := 0
-	for range results {
-		count++
-	}
-	assert.Equal(t, 3, count)
-
-	results = buf.QueryActors(dayStart, dayStart, dayStart.Add(time.Hour), []uint32{10, 20})
-	entries := []codec.LogEntry{}
-	for entry := range results {
-		entries = append(entries, entry)
-	}
-	assert.Len(t, entries, 2)
-	assert.Equal(t, entry1.ID(), entries[0].ID())
-	assert.Equal(t, entry3.ID(), entries[1].ID())
-
-	results = buf.QueryActors(dayStart, dayStart, dayStart.Add(time.Hour), []uint32{10, 20, 30})
-	entries = entries[:0]
-	for entry := range results {
-		entries = append(entries, entry)
-	}
-	assert.Len(t, entries, 1)
-	assert.Equal(t, entry3.ID(), entries[0].ID())
-
-	results = buf.QueryActors(dayStart, dayStart, dayStart.Add(time.Hour), []uint32{20, 40})
-	count = 0
-	for range results {
-		count++
-	}
-	assert.Equal(t, 0, count)
-
-	results = buf.QueryActors(dayStart, dayStart, dayStart.Add(time.Hour), []uint32{})
-	count = 0
-	for range results {
-		count++
-	}
-	assert.Equal(t, 0, count)
-}
-
-func testQueryStopEarly(t *testing.T) {
-	c, _ := codec.NewCodec()
-	buf := New(10, c)
-	dayStart := time.Now().UTC().Truncate(24 * time.Hour)
-
-	for i := uint32(1); i <= 3; i++ {
-		entry, _ := codec.NewLogEntry(i, "x", []uint32{1})
-		buf.Add(entry, dayStart.Add(time.Duration(i)*time.Minute))
-	}
-
-	count := 0
-	for range buf.QueryActors(dayStart, dayStart, dayStart.Add(time.Hour), []uint32{1}) {
-		count++
-		break
-	}
-	assert.Equal(t, 1, count)
-}
-
-func testQueryCorrupt(t *testing.T) {
-	c, _ := codec.NewCodec()
-	buf := New(10, c)
-	dayStart := time.Now().UTC().Truncate(24 * time.Hour)
-
-	entry, _ := codec.NewLogEntry(1, "ok", []uint32{1})
-	buf.Add(entry, dayStart)
-	buf.data = append(buf.data, 0, 0, 0, 0, 0) // truncated trailing entry
-
-	count := 0
-	for range buf.QueryActors(dayStart, dayStart, dayStart.Add(time.Hour), []uint32{1}) {
-		count++
-	}
-	assert.Equal(t, 1, count)
+	defer c.Close()
+	buf := New(2, c)
+	entry, _ := codec.NewLogEntry(0, "x", []uint32{1})
+	day := time.Date(2026, 7, 19, 0, 0, 0, 0, time.UTC)
+	require.NoError(t, buf.Add(day, entry))
+	require.Error(t, buf.Add(day.AddDate(0, 0, 1), entry))
 }

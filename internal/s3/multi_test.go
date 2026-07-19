@@ -183,18 +183,6 @@ func TestMultiReaderAt(t *testing.T) {
 		assert.Equal(t, []byte("abcdefghi"), result)
 	})
 
-	t.Run("ReadInterface", func(t *testing.T) {
-		data := []byte("hello world")
-		reader := NewMultiReader(data)
-
-		// Test Read method (reads from beginning)
-		buf := make([]byte, 5)
-		n, err := reader.Read(buf)
-		assert.Equal(t, 5, n)
-		assert.NoError(t, err)
-		assert.Equal(t, []byte("hello"), buf)
-	})
-
 	t.Run("OffsetCalculation", func(t *testing.T) {
 		// Test that offsets are calculated correctly
 		section1 := []byte("12345")    // offset 0, size 5

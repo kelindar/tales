@@ -99,7 +99,6 @@ func runSimulation(logger *tales.Service, duration time.Duration) {
 
 func demoQueries(logger *tales.Service) {
 	log.Println("\n=== Query Demo ===")
-	time.Sleep(2 * time.Second) // Let logs process
 
 	now := time.Now()
 	from := now.Add(-12 * time.Hour)
@@ -108,8 +107,12 @@ func demoQueries(logger *tales.Service) {
 	actor := actors[0]
 	log.Printf("\nConversations for %s:", actor.name)
 	count := 0
-	for timestamp, text := range logger.Query(from, now, actor.id) {
-		log.Printf("  [%s] %s", timestamp.Format("15:04:05"), text)
+	for event, err := range logger.Query(context.Background(), from, now, actor.id) {
+		if err != nil {
+			log.Printf("  Query failed: %v", err)
+			return
+		}
+		log.Printf("  [%s] %s", event.Time().Format("15:04:05"), event.Text())
 		count++
 	}
 	if count == 0 {
@@ -123,10 +126,15 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to create logger:", err)
 	}
-	defer logger.Close()
 
 	// Run simulation
 	//runSimulation(logger, 60*time.Minute)
+	if err := logger.Sync(context.Background()); err != nil {
+		log.Fatal("Failed to sync logger:", err)
+	}
 	demoQueries(logger)
+	if err := logger.Close(); err != nil {
+		log.Fatal("Failed to close logger:", err)
+	}
 	log.Println("\n=== Complete ===")
 }

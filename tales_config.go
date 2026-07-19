@@ -5,9 +5,11 @@ package tales
 
 import (
 	"fmt"
+	"hash/fnv"
 	"time"
 
 	"github.com/kelindar/s3/aws"
+	"github.com/kelindar/tales/internal/machine"
 	"github.com/kelindar/tales/internal/s3"
 )
 
@@ -25,6 +27,15 @@ func WithBuffer(size int) Option {
 	return func(c *config) { c.BufferSize = size }
 }
 
+// WithWriterID hashes a stable name into the service's 16-character writer ID.
+func WithWriterID(id string) Option {
+	return func(c *config) {
+		hash := fnv.New64a()
+		_, _ = hash.Write([]byte(id))
+		c.WriterID = fmt.Sprintf("%016x", hash.Sum64())
+	}
+}
+
 // WithPrefix sets the S3 key prefix to use when storing objects.
 func WithPrefix(prefix string) Option {
 	return func(c *config) { c.S3.Prefix = prefix }
@@ -33,11 +44,6 @@ func WithPrefix(prefix string) Option {
 // WithClient allows overriding the S3 client creation function.
 func WithClient(fn func(s3.Config) (s3.Client, error)) Option {
 	return func(c *config) { c.NewClient = fn }
-}
-
-// WithCache sets the size of the metadata LRU cache.
-func WithCache(size int) Option {
-	return func(c *config) { c.CacheSize = size }
 }
 
 // WithKey sets the signing key to use for the S3 client.
@@ -56,8 +62,10 @@ type config struct {
 	S3            s3.Config
 	ChunkInterval time.Duration
 	NewClient     func(s3.Config) (s3.Client, error)
-	CacheSize     int
 	BufferSize    int
+	WriterID      string
+	now           func() time.Time
+	composeParts  int
 }
 
 // setDefaults applies default values to the configuration.
@@ -66,13 +74,19 @@ func (c *config) setDefaults() {
 		c.ChunkInterval = 5 * time.Minute
 	}
 	if c.BufferSize == 0 {
-		c.BufferSize = 1000
-	}
-	if c.CacheSize == 0 {
-		c.CacheSize = 30 // days
+		c.BufferSize = 1 << 20
 	}
 	if c.S3.Service == "" {
 		c.S3.Service = "s3"
+	}
+	if c.WriterID == "" {
+		c.WriterID = fmt.Sprintf("%016x", machine.ID())
+	}
+	if c.now == nil {
+		c.now = time.Now
+	}
+	if c.composeParts == 0 {
+		c.composeParts = 10_000
 	}
 }
 
@@ -87,8 +101,8 @@ func (c *config) validate() error {
 		return fmt.Errorf("chunk interval must be at least 1 minute")
 	case c.BufferSize < 1:
 		return fmt.Errorf("buffer size must be at least 1")
-	case c.CacheSize < 0:
-		return fmt.Errorf("metadata cache size must be non-negative")
+	case len(c.WriterID) != 16:
+		return fmt.Errorf("invalid writer ID")
 	}
 	return nil
 }

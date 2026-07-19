@@ -9,33 +9,40 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"iter"
+	"slices"
 	"strings"
 
 	s3lib "github.com/kelindar/s3"
 	"github.com/kelindar/s3/aws"
 )
 
-// Config represents the S3-specific configuration.
 type Config struct {
-	Bucket  string          // S3 bucket name (required)
-	Region  string          // AWS region (required for mock)
-	Prefix  string          // S3 key prefix (optional)
-	Service string          // S3 service (optional)
-	Key     *aws.SigningKey // Optional signing key
+	Bucket  string
+	Region  string
+	Prefix  string
+	Service string
+	Key     *aws.SigningKey
 }
 
-// Client interface abstracts S3 operations for easier testing and mocking
-// This matches the previous AWS SDK based implementation.
+type Object struct {
+	Key  string
+	ETag string
+	Size int64
+	Dir  bool
+}
+
 type Client interface {
-	Upload(ctx context.Context, key string, data []byte) error
-	UploadReader(ctx context.Context, key string, reader io.ReaderAt, size int64) error
-	Download(ctx context.Context, key string) ([]byte, error)
-	DownloadRange(ctx context.Context, key string, start, end int64) ([]byte, error)
-	ObjectExists(ctx context.Context, key string) (bool, error)
-	ObjectSize(ctx context.Context, key string) (int64, error)
+	Upload(context.Context, string, []byte) (string, error)
+	UploadReader(context.Context, string, io.ReaderAt, int64) (string, error)
+	Download(context.Context, string) ([]byte, error)
+	DownloadRange(context.Context, string, string, int64, int64) ([]byte, error)
+	List(context.Context, string) iter.Seq2[Object, error]
+	Stat(context.Context, string) (Object, error)
+	Delete(context.Context, string) error
+	Compose(context.Context, string, []s3lib.CopyPart) (string, error)
 }
 
-// ErrS3Operation represents an S3 operation error.
 type ErrS3Operation struct {
 	Operation string
 	Err       error
@@ -47,7 +54,6 @@ func (e ErrS3Operation) Error() string {
 
 func (e ErrS3Operation) Unwrap() error { return e.Err }
 
-// S3Client wraps the kelindar/s3 bucket with convenience methods.
 type S3Client struct {
 	bucket     *s3lib.Bucket
 	key        *aws.SigningKey
@@ -55,7 +61,6 @@ type S3Client struct {
 	prefix     string
 }
 
-// NewClient creates a new client using ambient credentials.
 func NewClient(cfg Config) (client Client, err error) {
 	var key *aws.SigningKey
 	switch {
@@ -66,98 +71,147 @@ func NewClient(cfg Config) (client Client, err error) {
 	default:
 		err = fmt.Errorf("region or key is required")
 	}
-
 	if err != nil {
 		return nil, ErrS3Operation{Operation: "credentials", Err: err}
 	}
-
 	bucket := s3lib.NewBucket(key, cfg.Bucket)
 	bucket.Lazy = true
-	return &S3Client{bucket: bucket, key: key, bucketName: cfg.Bucket, prefix: cfg.Prefix}, nil
+	return &S3Client{bucket: bucket, key: key, bucketName: cfg.Bucket, prefix: strings.Trim(cfg.Prefix, "/")}, nil
 }
 
-// buildKey constructs an S3 key with the configured prefix.
 func (c *S3Client) buildKey(key string) string {
 	if c.prefix == "" {
 		return key
 	}
-	return strings.TrimSuffix(c.prefix, "/") + "/" + key
+	return c.prefix + "/" + strings.TrimPrefix(key, "/")
 }
 
-// Upload overwrites an S3 object with the given data.
-func (c *S3Client) Upload(ctx context.Context, key string, data []byte) error {
-	fullKey := c.buildKey(key)
-	if _, err := c.bucket.Write(ctx, fullKey, data); err != nil {
-		return ErrS3Operation{Operation: "write", Err: err}
+func (c *S3Client) trimKey(key string) string {
+	if c.prefix == "" {
+		return key
 	}
-	return nil
+	return strings.TrimPrefix(key, c.prefix+"/")
 }
 
-// UploadReader uploads data from a ReaderAt to S3.
-func (c *S3Client) UploadReader(ctx context.Context, key string, reader io.ReaderAt, size int64) error {
-	fullKey := c.buildKey(key)
-	if err := c.bucket.WriteFrom(ctx, fullKey, reader, size); err != nil {
-		return ErrS3Operation{Operation: "write", Err: err}
+func (c *S3Client) Upload(ctx context.Context, key string, data []byte) (string, error) {
+	etag, err := c.bucket.Write(ctx, c.buildKey(key), data)
+	if err != nil {
+		return "", ErrS3Operation{Operation: "write", Err: err}
 	}
-	return nil
+	return etag, nil
 }
 
-// Download downloads an object.
+func (c *S3Client) UploadReader(ctx context.Context, key string, reader io.ReaderAt, size int64) (string, error) {
+	if err := c.bucket.WriteFrom(ctx, c.buildKey(key), reader, size); err != nil {
+		return "", ErrS3Operation{Operation: "write", Err: err}
+	}
+	object, err := c.Stat(ctx, key)
+	if err != nil {
+		return "", err
+	}
+	return object.ETag, nil
+}
+
 func (c *S3Client) Download(ctx context.Context, key string) ([]byte, error) {
-	fullKey := c.buildKey(key)
-	f, err := c.bucket.Open(fullKey)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	f, err := c.bucket.Open(c.buildKey(key))
 	if err != nil {
 		return nil, ErrS3Operation{Operation: "download", Err: err}
 	}
 	defer f.Close()
-	return io.ReadAll(f)
+	data, err := io.ReadAll(f)
+	if err == nil {
+		err = ctx.Err()
+	}
+	if err != nil {
+		return nil, ErrS3Operation{Operation: "download", Err: err}
+	}
+	return data, nil
 }
 
-// DownloadRange downloads a byte range from S3.
-func (c *S3Client) DownloadRange(ctx context.Context, key string, start, end int64) ([]byte, error) {
-	fullKey := c.buildKey(key)
-	reader, err := c.bucket.OpenRange(fullKey, "", start, end-start+1)
+func (c *S3Client) DownloadRange(ctx context.Context, key, etag string, offset, size int64) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	reader, err := c.bucket.OpenRange(c.buildKey(key), etag, offset, size)
 	if err != nil {
 		return nil, ErrS3Operation{Operation: "range", Err: err}
 	}
 	defer reader.Close()
-	return io.ReadAll(reader)
-}
-
-// ObjectExists checks if an object exists.
-func (c *S3Client) ObjectExists(ctx context.Context, key string) (bool, error) {
-	fullKey := c.buildKey(key)
-	_, err := c.bucket.Open(fullKey)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return false, nil
-		}
-		return false, ErrS3Operation{Operation: "head", Err: err}
-	}
-	return true, nil
-}
-
-// ObjectSize returns the size of an object.
-func (c *S3Client) ObjectSize(ctx context.Context, key string) (int64, error) {
-	fullKey := c.buildKey(key)
-	f, err := c.bucket.Open(fullKey)
-	if err != nil {
-		return 0, ErrS3Operation{Operation: "head", Err: err}
-	}
-	defer f.Close()
-	if s3f, ok := f.(*s3lib.File); ok {
-		return s3f.Reader.Size, nil
-	}
-	return 0, ErrS3Operation{Operation: "head", Err: fmt.Errorf("not a file")}
-}
-
-// IsNoSuchKey checks if the error is a missing object error.
-func IsNoSuchKey(err error) bool {
+	data, err := io.ReadAll(reader)
 	if err == nil {
-		return false
+		err = ctx.Err()
 	}
-	if errors.Is(err, fs.ErrNotExist) {
-		return true
+	if err == nil && int64(len(data)) != size {
+		err = io.ErrUnexpectedEOF
 	}
-	return strings.Contains(err.Error(), "NoSuchKey") || strings.Contains(err.Error(), "404")
+	if err != nil {
+		return nil, ErrS3Operation{Operation: "range", Err: err}
+	}
+	return data, nil
+}
+
+func (c *S3Client) List(ctx context.Context, prefix string) iter.Seq2[Object, error] {
+	return func(yield func(Object, error) bool) {
+		for entry, err := range c.bucket.List(ctx, c.buildKey(prefix)) {
+			if err != nil {
+				yield(Object{}, ErrS3Operation{Operation: "list", Err: err})
+				return
+			}
+			switch value := entry.(type) {
+			case *s3lib.File:
+				if !yield(Object{Key: c.trimKey(value.Path()), ETag: value.Reader.ETag, Size: value.Reader.Size}, nil) {
+					return
+				}
+			case *s3lib.Prefix:
+				if !yield(Object{Key: strings.TrimSuffix(c.trimKey(value.Path), "/"), Dir: true}, nil) {
+					return
+				}
+			}
+		}
+	}
+}
+
+func (c *S3Client) Stat(ctx context.Context, key string) (Object, error) {
+	if err := ctx.Err(); err != nil {
+		return Object{}, err
+	}
+	reader, err := s3lib.Stat(c.key, c.bucketName, c.buildKey(key))
+	if err != nil {
+		return Object{}, ErrS3Operation{Operation: "head", Err: err}
+	}
+	if err := ctx.Err(); err != nil {
+		return Object{}, err
+	}
+	return Object{Key: key, ETag: reader.ETag, Size: reader.Size}, nil
+}
+
+func (c *S3Client) Delete(ctx context.Context, key string) error {
+	if err := c.bucket.Delete(ctx, c.buildKey(key)); err != nil {
+		return ErrS3Operation{Operation: "delete", Err: err}
+	}
+	return nil
+}
+
+func (c *S3Client) Compose(ctx context.Context, key string, parts []s3lib.CopyPart) (string, error) {
+	parts = slices.Clone(parts)
+	for i := range parts {
+		parts[i].SourceKey = c.buildKey(parts[i].SourceKey)
+	}
+	etag, err := c.bucket.Compose(ctx, c.buildKey(key), parts)
+	if err != nil {
+		return "", ErrS3Operation{Operation: "compose", Err: err}
+	}
+	return etag, nil
+}
+
+func IsNoSuchKey(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || strings.Contains(fmt.Sprint(err), "NoSuchKey") || strings.Contains(fmt.Sprint(err), "404")
+}
+
+func IsComposeUnsupported(err error) bool {
+	message := strings.ToLower(fmt.Sprint(err))
+	return strings.Contains(message, "notimplemented") || strings.Contains(message, "not implemented") || strings.Contains(message, "not supported") || strings.Contains(message, "501")
 }

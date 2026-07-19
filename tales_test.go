@@ -1,421 +1,574 @@
-// Copyright (c) Roman Atachiants and contributors. All rights reserved.
-// Licensed under the MIT license. See LICENSE file in the project root
-
 package tales
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
-	"log"
+	"iter"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/kelindar/roaring"
+	s3lib "github.com/kelindar/s3"
 	s3mock "github.com/kelindar/s3/mock"
-	"github.com/kelindar/tales/internal/codec"
-	"github.com/kelindar/tales/internal/s3"
-	"github.com/kelindar/tales/internal/seq"
-	"github.com/stretchr/testify/assert"
+	internals3 "github.com/kelindar/tales/internal/s3"
 	"github.com/stretchr/testify/require"
 )
 
-/*
-cpu: 13th Gen Intel(R) Core(TM) i7-13700K
-BenchmarkLog-24    	 4557070	       228.2 ns/op	   4403361 tps	     869 B/op	       2 allocs/op
-*/
-func BenchmarkLog(b *testing.B) {
-	logger, err := newService()
-	require.NoError(b, err)
-	defer logger.Close()
+func TestDistributedWriters(t *testing.T) {
+	server := s3mock.New("events", "us-east-1")
+	defer server.Close()
+	now := time.Date(2026, 7, 19, 12, 0, 0, 123_000_000, time.UTC)
+	a := testService(t, server, "shared", "writer-a", func(c *config) { c.now = func() time.Time { return now } })
+	b := testService(t, server, "shared", "writer-b", func(c *config) { c.now = func() time.Time { return now } })
+	defer a.Close()
+	defer b.Close()
 
-	count := 0
-	start := time.Now()
-	for time.Now().Sub(start) < time.Second {
-		const interval = 50 * time.Millisecond
-		for i := time.Now(); time.Now().Sub(i) < interval; {
-			logger.Log("hello world", 1)
-			count++
-		}
-
-		logger.flush()
-	}
-
-	b.N = count
-	b.ReportMetric(float64(count)/time.Now().Sub(start).Seconds(), "tps")
-}
-
-/*
-cpu: 13th Gen Intel(R) Core(TM) i7-13700K
-BenchmarkQuery-24    	      90	  11189897 ns/op	        89.39 qps	 5660155 B/op	   32406 allocs/op
-*/
-func BenchmarkQuery(b *testing.B) {
-	logger, err := newService()
-	require.NoError(b, err)
-	defer logger.Close()
-
-	for chunk := 0; chunk < 100; chunk++ {
-		for i := 0; i < 1000; i++ {
-			logger.Log("hello world", uint32(i%100))
-		}
-		logger.flush()
-	}
-
-	b.ResetTimer()
-	count := 0
-	start := time.Now()
-	for time.Now().Sub(start) < time.Second {
-		const interval = 50 * time.Millisecond
-		for i := time.Now(); time.Now().Sub(i) < interval; {
-			for range logger.Query(time.Now().Add(-1*time.Hour), time.Now().Add(1*time.Hour), 1) {
-				// Consume the iterator
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for _, writer := range []*Service{a, b} {
+		writer := writer
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := writer.Log(writer.config.WriterID+"-0", 1); err != nil {
+				errs <- err
+				return
 			}
-			count++
+			if err := writer.Log(writer.config.WriterID+"-1", 1); err != nil {
+				errs <- err
+				return
+			}
+			errs <- writer.Sync(context.Background())
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+
+	reader := testService(t, server, "shared", "reader", func(c *config) { c.now = func() time.Time { return now } })
+	defer reader.Close()
+	events := collectEvents(t, reader.Query(context.Background(), now.Add(-time.Second), now.Add(time.Second), 1))
+	require.Len(t, events, 4)
+	writers := []*Service{a, b}
+	if writers[1].config.WriterID < writers[0].config.WriterID {
+		writers[0], writers[1] = writers[1], writers[0]
+	}
+	require.Equal(t, []string{
+		writers[0].config.WriterID + "-0",
+		writers[0].config.WriterID + "-1",
+		writers[1].config.WriterID + "-0",
+		writers[1].config.WriterID + "-1",
+	}, eventTexts(events))
+	for _, event := range events {
+		require.Equal(t, now, event.Time())
+	}
+}
+
+func TestWarmQuery(t *testing.T) {
+	server := s3mock.New("events", "us-east-1")
+	defer server.Close()
+	now := time.Date(2026, 7, 19, 0, 0, 0, 0, time.UTC)
+	service := testService(t, server, "warm", "writer", func(c *config) { c.now = func() time.Time { return now } })
+	defer service.Close()
+
+	require.NoError(t, service.Log(`{"value":1}`, 1, 2))
+	events := collectEvents(t, service.Query(context.Background(), now, now, 1, 2))
+	require.Len(t, events, 1)
+	require.Equal(t, events[0].Bytes(), []byte(events[0].JSON()))
+	clone := events[0].Clone()
+	events[0].Bytes()[0] = 'x'
+	require.Equal(t, byte('{'), clone.Bytes()[0])
+	require.NoError(t, service.Sync(context.Background()))
+	require.True(t, server.ObjectExists("warm/"+keyOfManifest(dayKey(now), service.config.WriterID)))
+}
+
+func TestCloseRetry(t *testing.T) {
+	server := s3mock.New("events", "us-east-1")
+	defer server.Close()
+	service := testService(t, server, "retry", "writer")
+	client := &failingClient{Client: service.s3Client, failManifest: true}
+	service.s3Client = client
+	require.NoError(t, service.Log("one", 1))
+	require.Error(t, service.Close())
+	require.NoError(t, service.Log("two", 1))
+	client.failManifest = false
+	require.NoError(t, service.Sync(context.Background()))
+
+	now := time.Now()
+	events := collectEvents(t, service.Query(context.Background(), now.Add(-time.Hour), now.Add(time.Hour), 1))
+	require.Equal(t, []string{"one", "two"}, eventTexts(events))
+	require.NoError(t, service.Close())
+}
+
+func TestAmbiguousCommit(t *testing.T) {
+	server := s3mock.New("events", "us-east-1")
+	defer server.Close()
+	service := testService(t, server, "ambiguous", "writer")
+	client := &ambiguousClient{Client: service.s3Client, failManifest: true}
+	service.s3Client = client
+	defer service.Close()
+
+	require.NoError(t, service.Log("once", 1))
+	require.Error(t, service.Sync(context.Background()))
+	require.NoError(t, service.Sync(context.Background()))
+	manifest, err := service.downloadManifest(context.Background(), dayKey(time.Now()), service.config.WriterID)
+	require.NoError(t, err)
+	require.Len(t, manifest.Chunks, 1)
+	events := collectEvents(t, service.Query(context.Background(), time.Now().Add(-time.Hour), time.Now().Add(time.Hour), 1))
+	require.Equal(t, []string{"once"}, eventTexts(events))
+}
+
+func TestWarmSnapshot(t *testing.T) {
+	server := s3mock.New("events", "us-east-1")
+	defer server.Close()
+	service := testService(t, server, "snapshot", "writer")
+	defer service.Close()
+	require.NoError(t, service.Log("once", 1))
+
+	client := &blockingListClient{Client: service.s3Client, started: make(chan struct{}), release: make(chan struct{})}
+	service.s3Client = client
+	type queryResult struct {
+		texts []string
+		err   error
+	}
+	done := make(chan queryResult, 1)
+	go func() {
+		var result queryResult
+		for event, err := range service.Query(context.Background(), time.Now().Add(-time.Hour), time.Now().Add(time.Hour), 1) {
+			if err != nil {
+				result.err = err
+				break
+			}
+			result.texts = append(result.texts, event.Text())
 		}
-	}
-
-	b.N = count
-	b.ReportMetric(float64(count)/time.Now().Sub(start).Seconds(), "qps")
+		done <- result
+	}()
+	<-client.started
+	require.NoError(t, service.Sync(context.Background()))
+	close(client.release)
+	got := <-done
+	require.NoError(t, got.err)
+	require.Equal(t, []string{"once"}, got.texts)
 }
 
-func TestQuery(t *testing.T) {
-	tests := map[string]func(*testing.T){
-		"integration":          testQueryIntegration,
-		"multi day":            testQueryMultiDay,
-		"downloads chunk once": testQueryDownloadsOnce,
-	}
-	for name, fn := range tests {
-		t.Run(name, fn)
-	}
+func TestDiscoveryCache(t *testing.T) {
+	server := s3mock.New("events", "us-east-1")
+	defer server.Close()
+	service := testService(t, server, "cache", "writer")
+	require.NoError(t, service.Log("one", 1))
+	require.NoError(t, service.Sync(context.Background()))
+	from, to := time.Now().Add(-time.Hour), time.Now().Add(time.Hour)
+	collectEvents(t, service.Query(context.Background(), from, to, 1))
+	lists := countMethod(server, "GET", "writers")
+	collectEvents(t, service.Query(context.Background(), from, to, 1))
+	require.Equal(t, lists, countMethod(server, "GET", "writers"))
+	require.NoError(t, service.Close())
 }
 
-func testQueryIntegration(t *testing.T) {
-	logger, err := newService()
-	require.NoError(t, err)
-	defer logger.Close()
+func TestCompactionEquivalence(t *testing.T) {
+	server := s3mock.New("events", "us-east-1")
+	defer server.Close()
+	old := time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC)
+	writer := testService(t, server, "compact", "writer", func(c *config) { c.now = func() time.Time { return old } })
+	require.NoError(t, writer.Log("one", 1))
+	require.NoError(t, writer.Log("two", 1, 2))
+	require.NoError(t, writer.Sync(context.Background()))
+	require.NoError(t, writer.Close())
 
-	logger.Log("hello world 1", 1)
-	logger.Log("hello world 2", 2)
-	logger.flush()
-	logger.Log("hello world 3", 1, 3)
-	logger.flush()
-	logger.Log("hello world 4", 1, 2)
+	future := old.Add(72 * time.Hour)
+	service := testService(t, server, "compact", "compactor", func(c *config) { c.now = func() time.Time { return future } })
+	defer service.Close()
+	from, to := old.Add(-time.Hour), old.Add(time.Hour)
+	before := eventTexts(collectEvents(t, service.Query(context.Background(), from, to, 1)))
+	require.NoError(t, service.Compact(context.Background(), old))
+	after := eventTexts(collectEvents(t, service.Query(context.Background(), from, to, 1)))
+	require.Equal(t, before, after)
+	require.True(t, server.ObjectExists("compact/"+keyOfCompactMeta(dayKey(old))))
+	require.NoError(t, service.Compact(context.Background(), old))
+	require.Error(t, service.Compact(context.Background(), future.Add(-24*time.Hour)))
 
-	from := time.Now().Add(-1 * time.Hour)
-	to := time.Now().Add(1 * time.Hour)
-
-	var results1 []string
-	for timestamp, msg := range logger.Query(from, to, 1) {
-		_ = timestamp
-		results1 = append(results1, msg)
-	}
-
-	assert.Equal(t, []string{
-		"hello world 1",
-		"hello world 3",
-		"hello world 4",
-	}, results1)
-
-	var results2 []string
-	for _, msg := range logger.Query(from, to, 2) {
-		results2 = append(results2, msg)
-	}
-	assert.Equal(t, []string{
-		"hello world 2",
-		"hello world 4",
-	}, results2)
-
-	var results3 []string
-	for _, msg := range logger.Query(from, to, 3) {
-		results3 = append(results3, msg)
-	}
-	assert.Equal(t, []string{
-		"hello world 3",
-	}, results3)
-
-	var results4 []string
-	for _, msg := range logger.Query(from, to, 4) {
-		results4 = append(results4, msg)
-	}
-	assert.Empty(t, results4)
-
-	var resultsMultiple []string
-	for _, msg := range logger.Query(from, to, 1, 2) {
-		resultsMultiple = append(resultsMultiple, msg)
-	}
-	assert.Equal(t, []string{
-		"hello world 4",
-	}, resultsMultiple)
+	late := testService(t, server, "compact", "late", func(c *config) { c.now = func() time.Time { return old } })
+	require.NoError(t, late.Log("late", 1))
+	require.Error(t, late.Sync(context.Background()))
+	require.NoError(t, late.s3Client.Delete(context.Background(), keyOfCompactMeta(dayKey(old))))
+	require.NoError(t, late.Close())
 }
 
-func testQueryMultiDay(t *testing.T) {
-	logger, err := newService()
-	require.NoError(t, err)
-	defer logger.Close()
+func TestCompactionCommit(t *testing.T) {
+	server := s3mock.New("events", "us-east-1")
+	defer server.Close()
+	old := time.Date(2026, 7, 10, 10, 0, 0, 0, time.UTC)
+	writer := testService(t, server, "commit", "writer", func(c *config) { c.now = func() time.Time { return old } })
+	require.NoError(t, writer.Log("one", 1))
+	require.NoError(t, writer.Sync(context.Background()))
+	require.NoError(t, writer.Close())
 
-	logger.Log("message from day 1", 1)
-	logger.Log("message from day 1 actor 2", 2)
-	logger.flush()
-	logger.Log("another message from day 1", 1, 3)
-	logger.flush()
-
-	futureNow := time.Now().Add(2 * 24 * time.Hour)
-	from := futureNow.Add(-3 * 24 * time.Hour)
-	to := futureNow.Add(1 * 24 * time.Hour)
-
-	var results1 []string
-	for _, msg := range logger.Query(from, to, 1) {
-		results1 = append(results1, msg)
-	}
-
-	assert.Equal(t, []string{
-		"message from day 1",
-		"another message from day 1",
-	}, results1)
-
-	var resultsMultiple []string
-	for _, msg := range logger.Query(from, to, 1, 3) {
-		resultsMultiple = append(resultsMultiple, msg)
-	}
-	assert.Equal(t, []string{
-		"another message from day 1",
-	}, resultsMultiple)
-
-	futureFrom := time.Now().Add(5 * 24 * time.Hour)
-	futureTo := time.Now().Add(7 * 24 * time.Hour)
-	var futureResults []string
-	for _, msg := range logger.Query(futureFrom, futureTo, 1) {
-		futureResults = append(futureResults, msg)
-	}
-	assert.Empty(t, futureResults, "Should not find any results in future time range")
+	now := old.Add(72 * time.Hour)
+	service := testService(t, server, "commit", "compactor", func(c *config) { c.now = func() time.Time { return now } })
+	client := &suffixFailClient{Client: service.s3Client, suffix: "/compact/metadata.json", fail: true}
+	service.s3Client = client
+	defer service.Close()
+	require.Error(t, service.Compact(context.Background(), old))
+	require.False(t, server.ObjectExists("commit/"+keyOfCompactMeta(dayKey(old))))
+	require.Equal(t, []string{"one"}, eventTexts(collectEvents(t, service.Query(context.Background(), old.Add(-time.Hour), old.Add(time.Hour), 1))))
+	client.fail = false
+	require.NoError(t, service.Compact(context.Background(), old))
 }
 
-func testQueryDownloadsOnce(t *testing.T) {
-	logger, err := newService()
-	require.NoError(t, err)
-	defer logger.Close()
-
-	require.NoError(t, logger.Log("hello world", 1))
-	logger.flush()
-
-	client := &countingClient{Client: logger.s3Client}
-	logger.s3Client = client
-	for range logger.Query(time.Now().Add(-time.Hour), time.Now().Add(time.Hour), 1) {
-	}
-	assert.Equal(t, 1, client.ranges)
-}
-
-func TestKeys(t *testing.T) {
-	assert.Equal(t, "2023-01-02/metadata.json", keyOfMetadata("2023-01-02"))
-	assert.Equal(t, "2023-01-02/5.log", keyOfChunk("2023-01-02", 5))
-}
-
-func TestGuards(t *testing.T) {
-	logger, err := newService()
-	require.NoError(t, err)
-
-	from := time.Now().Add(-time.Hour)
-	to := time.Now().Add(time.Hour)
-
-	for range logger.Query(from, to) {
-		t.Fatal("expected no results without actors")
-	}
-
-	require.NoError(t, logger.Close())
-	for range logger.Query(from, to, 1) {
-		t.Fatal("expected no results after close")
-	}
-}
-
-func TestBufferOverflow(t *testing.T) {
-	mockS3 := s3mock.New("test-bucket", "us-east-1")
-	logger, err := New(
-		"test-bucket",
-		"us-east-1",
-		WithInterval(time.Minute),
-		WithBuffer(1),
-		WithClient(func(config s3.Config) (s3.Client, error) {
-			return s3.NewMockClient(mockS3, config)
-		}),
-	)
-	require.NoError(t, err)
-	defer logger.Close()
-
-	require.NoError(t, logger.Log("one", 1))
-	require.NoError(t, logger.Log("two", 1)) // forces flush when buffer is full
-
-	from := time.Now().Add(-time.Hour)
-	to := time.Now().Add(time.Hour)
-	var texts []string
-	for _, text := range logger.Query(from, to, 1) {
-		texts = append(texts, text)
-	}
-	assert.Contains(t, texts, "two")
-}
-
-func TestQueryHelpers(t *testing.T) {
-	t.Run("chunkActorIndexes empty data", func(t *testing.T) {
-		chunk := codec.NewChunkEntry(0, 0, 0, 0, 0, nil)
-		_, _, ok := chunkActorIndexes(chunk, []uint32{1}, 0, 100)
-		assert.False(t, ok)
+func TestServerCopy(t *testing.T) {
+	server := s3mock.New("events", "us-east-1")
+	defer server.Close()
+	old := time.Date(2026, 7, 10, 10, 0, 0, 0, time.UTC)
+	writer := testService(t, server, "copy", "writer", func(c *config) {
+		c.now = func() time.Time { return old }
+		c.BufferSize = 90
 	})
+	payload := make([]byte, 60_000)
+	for range 180 {
+		_, err := rand.Read(payload)
+		require.NoError(t, err)
+		require.NoError(t, writer.Log(string(payload), 1))
+	}
+	require.NoError(t, writer.Sync(context.Background()))
+	manifest, err := writer.downloadManifest(context.Background(), dayKey(old), writer.config.WriterID)
+	require.NoError(t, err)
+	require.Len(t, manifest.Chunks, 2)
+	for _, chunk := range manifest.Chunks {
+		require.GreaterOrEqual(t, chunk.Data.Size, int64(s3lib.MinPartSize))
+	}
+	firstSource := "copy/" + keyOfChunk(dayKey(old), writer.config.WriterID, 0)
+	secondSource := "copy/" + keyOfChunk(dayKey(old), writer.config.WriterID, 1)
+	require.NoError(t, writer.Close())
 
-	t.Run("intersectIndexes out of bounds", func(t *testing.T) {
-		indexes := []codec.IndexEntry{codec.NewIndexEntry(0, 0, 100)}
-		assert.Nil(t, intersectIndexes([]byte{1, 2, 3}, indexes, 0))
+	clock := old.Add(72 * time.Hour)
+	service := testService(t, server, "copy", "compactor", func(c *config) {
+		c.now = func() time.Time { return clock }
+		c.composeParts = 1
 	})
+	defer service.Close()
+	firstBefore := countPath(server, "GET", firstSource)
+	secondBefore := countPath(server, "GET", secondSource)
+	require.NoError(t, service.Compact(context.Background(), old))
+	require.Equal(t, 1, countPath(server, "GET", firstSource)-firstBefore, "compactor should GET only the actor bitmap")
+	require.Equal(t, 1, countPath(server, "GET", secondSource)-secondBefore, "compactor should GET only the actor bitmap")
+	meta, ok, err := service.compactMetadata(context.Background(), dayKey(old))
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.True(t, meta.Sources[0].Copied)
+	require.False(t, meta.Sources[1].Copied)
 
-	t.Run("rangeChunks empty", func(t *testing.T) {
-		logger, err := newService()
-		require.NoError(t, err)
-		defer logger.Close()
+	clock = clock.Add(25 * time.Hour)
+	cleanup := &deleteFailClient{Client: service.s3Client, fail: true}
+	service.s3Client = cleanup
+	require.Error(t, service.Compact(context.Background(), old))
+	require.Len(t, collectEvents(t, service.Query(context.Background(), old.Add(-time.Hour), old.Add(time.Hour), 1)), 180)
+	cleanup.fail = false
+	require.NoError(t, service.Compact(context.Background(), old))
+	require.False(t, server.ObjectExists(firstSource))
+	require.True(t, server.ObjectExists(secondSource))
+	require.NoError(t, service.Compact(context.Background(), old))
+	events := collectEvents(t, service.Query(context.Background(), old.Add(-time.Hour), old.Add(time.Hour), 1))
+	require.Len(t, events, 180)
+}
 
-		sids := roaring.New()
-		sids.Set(1)
-		seq, err := logger.rangeChunks(nil, sids)
-		require.NoError(t, err)
+func TestQueryErrors(t *testing.T) {
+	t.Run("yields cancellation once", func(t *testing.T) {
+		server := s3mock.New("events", "us-east-1")
+		defer server.Close()
+		service := testService(t, server, "errors", "writer")
+		defer service.Close()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
 		count := 0
-		for range seq {
+		for _, err := range service.Query(ctx, time.Now().Add(-time.Hour), time.Now(), 1) {
+			require.ErrorIs(t, err, context.Canceled)
 			count++
 		}
-		assert.Equal(t, 0, count)
+		require.Equal(t, 1, count)
 	})
 
-	t.Run("scanForSID stop and invalid", func(t *testing.T) {
-		entry, err := codec.NewLogEntry(1, "hi", []uint32{1})
-		require.NoError(t, err)
-		buf := []byte(entry)
-
-		assert.False(t, scanForSID(&buf, 1, func(codec.LogEntry) bool { return false }))
-
-		bad := []byte{1, 0, 0, 0, 0, 0} // size 0
-		assert.False(t, scanForSID(&bad, 1, func(codec.LogEntry) bool { return true }))
-	})
-
-	t.Run("queryChunk stop early", func(t *testing.T) {
-		logger, err := newService()
-		require.NoError(t, err)
-		defer logger.Close()
-
-		require.NoError(t, logger.Log("a", 1))
-		require.NoError(t, logger.Log("b", 1))
-		logger.flush()
-
+	t.Run("yields invalid arguments once", func(t *testing.T) {
+		server := s3mock.New("events", "us-east-1")
+		defer server.Close()
+		service := testService(t, server, "arguments", "writer")
+		defer service.Close()
 		count := 0
-		for range logger.Query(time.Now().Add(-time.Hour), time.Now().Add(time.Hour), 1) {
+		for _, err := range service.Query(context.Background(), time.Now(), time.Now().Add(-time.Hour), 1) {
+			require.Error(t, err)
 			count++
-			break
 		}
-		assert.Equal(t, 1, count)
+		require.Equal(t, 1, count)
+	})
+
+	t.Run("yields malformed manifest once", func(t *testing.T) {
+		server := s3mock.New("events", "us-east-1")
+		defer server.Close()
+		now := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
+		writer := testService(t, server, "malformed", "writer", func(c *config) { c.now = func() time.Time { return now } })
+		require.NoError(t, writer.Log("one", 1))
+		require.NoError(t, writer.Sync(context.Background()))
+		_, err := writer.s3Client.Upload(context.Background(), keyOfManifest(dayKey(now), writer.config.WriterID), []byte("not json"))
+		require.NoError(t, err)
+		require.NoError(t, writer.Close())
+
+		reader := testService(t, server, "malformed", "reader", func(c *config) { c.now = func() time.Time { return now } })
+		defer reader.Close()
+		count := 0
+		for _, err := range reader.Query(context.Background(), now.Add(-time.Hour), now.Add(time.Hour), 1) {
+			require.Error(t, err)
+			count++
+		}
+		require.Equal(t, 1, count)
 	})
 }
 
-func TestClose(t *testing.T) {
-	logger, err := newService()
-	require.NoError(t, err)
+func TestWriterID(t *testing.T) {
+	var a, b config
+	WithWriterID("same")(&a)
+	WithWriterID("same")(&b)
+	require.Equal(t, a.WriterID, b.WriterID)
+	require.Len(t, a.WriterID, 16)
+	WithWriterID("hello")(&a)
+	require.Equal(t, "a430d84680aabd0b", a.WriterID)
+}
 
-	logger.Log("pending event", 1)
+func TestConfig(t *testing.T) {
+	cfg := config{S3: internals3.Config{Bucket: "b", Region: "r"}, WriterID: "0123456789abcdef"}
+	WithBuffer(64)(&cfg)
+	WithBackblaze()(&cfg)
+	WithKey(nil)(&cfg)
+	WithInterval(2 * time.Minute)(&cfg)
+	cfg.setDefaults()
+	require.Equal(t, 64, cfg.BufferSize)
+	require.Equal(t, "b2", cfg.S3.Service)
+	require.NoError(t, cfg.validate())
 
-	err = logger.Close()
-	require.NoError(t, err)
+	require.Error(t, (&config{S3: internals3.Config{Region: "r"}, WriterID: "0123456789abcdef", ChunkInterval: time.Minute, BufferSize: 1}).validate())
+	require.Error(t, (&config{S3: internals3.Config{Bucket: "b"}, WriterID: "0123456789abcdef", ChunkInterval: time.Minute, BufferSize: 1}).validate())
+	require.Error(t, (&config{S3: internals3.Config{Bucket: "b", Region: "r"}, WriterID: "0123456789abcdef", ChunkInterval: time.Second, BufferSize: 1}).validate())
+	require.Error(t, (&config{S3: internals3.Config{Bucket: "b", Region: "r"}, WriterID: "0123456789abcdef", ChunkInterval: time.Minute, BufferSize: 0}).validate())
+	require.Error(t, (&config{S3: internals3.Config{Bucket: "b", Region: "r"}, WriterID: "short", ChunkInterval: time.Minute, BufferSize: 1}).validate())
+}
 
-	ctx := context.Background()
-	date := seq.FormatDate(time.Now())
+func TestLogGuards(t *testing.T) {
+	server := s3mock.New("events", "us-east-1")
+	defer server.Close()
+	service := testService(t, server, "guards", "writer", WithBuffer(1))
+	defer service.Close()
 
-	exists, err := logger.s3Client.ObjectExists(ctx, keyOfMetadata(date))
-	require.NoError(t, err)
-	assert.True(t, exists)
+	require.Error(t, service.Log(""))
+	require.Error(t, service.Log("x"))
+	require.Error(t, service.Log("x", make([]uint32, 1001)...))
+	require.NoError(t, service.Log("one", 1))
+	require.NoError(t, service.Log("two", 1)) // forces flush via accept buffer full path
+	require.NoError(t, service.Sync(context.Background()))
 
-	buf, err := logger.s3Client.Download(ctx, keyOfMetadata(date))
+	for _, err := range service.Query(nil, time.Now().Add(-time.Hour), time.Now(), 1) {
+		require.Error(t, err)
+		break
+	}
+	for _, err := range service.Query(context.Background(), time.Now().Add(-time.Hour), time.Now()) {
+		require.Error(t, err)
+		break
+	}
+}
+
+func TestDayRollover(t *testing.T) {
+	server := s3mock.New("events", "us-east-1")
+	defer server.Close()
+	now := time.Date(2026, 7, 19, 23, 59, 0, 0, time.UTC)
+	current := now
+	service := testService(t, server, "rollover", "writer", func(c *config) {
+		c.now = func() time.Time { return current }
+	})
+	defer service.Close()
+
+	require.NoError(t, service.Log("day-one", 1))
+	current = now.Add(2 * time.Minute) // next UTC day
+	require.NoError(t, service.Log("day-two", 1))
+	require.NoError(t, service.Sync(context.Background()))
+
+	events := collectEvents(t, service.Query(context.Background(), now.Add(-time.Hour), current.Add(time.Hour), 1))
+	require.Equal(t, []string{"day-one", "day-two"}, eventTexts(events))
+}
+
+func TestNewClientDefault(t *testing.T) {
+	_, err := New("bucket", "us-east-1")
+	require.Error(t, err)
+}
+
+func TestLifecycle(t *testing.T) {
+	server := s3mock.New("events", "us-east-1")
+	defer server.Close()
+	service := testService(t, server, "lifecycle", "writer")
+	require.NoError(t, service.Log("seed", 1))
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for _, operation := range []func(){
+		func() {
+			for range 100 {
+				_ = service.Log("event", 1)
+			}
+		},
+		func() {
+			for range 20 {
+				_ = service.Sync(context.Background())
+			}
+		},
+		func() {
+			for range 20 {
+				for range service.Query(context.Background(), time.Now().Add(-time.Hour), time.Now().Add(time.Hour), 1) {
+				}
+			}
+		},
+	} {
+		operation := operation
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			operation()
+		}()
+	}
+	close(start)
+	require.NoError(t, service.Close())
+	wg.Wait()
+	require.Error(t, service.Log("late", 1))
+}
+
+func BenchmarkLog(b *testing.B) {
+	server := s3mock.New("events", "us-east-1")
+	defer server.Close()
+	service := testService(b, server, "bench", "writer")
+	defer service.Close()
+	b.ResetTimer()
+	for range b.N {
+		_ = service.Log("hello", 1)
+	}
+}
+
+func testService(t testing.TB, server *s3mock.Server, prefix, writer string, extra ...Option) *Service {
+	options := []Option{
+		WithPrefix(prefix), WithWriterID(writer), WithInterval(time.Minute),
+		WithClient(func(cfg internals3.Config) (internals3.Client, error) { return internals3.NewMockClient(server, cfg) }),
+	}
+	options = append(options, extra...)
+	service, err := New("events", "us-east-1", options...)
 	require.NoError(t, err)
-	meta, err := codec.DecodeMetadata(buf)
-	require.NoError(t, err)
-	if assert.Greater(t, meta.Length, uint32(0)) {
-		chunkKey := keyOfChunk(date, 0)
-		exists, err = logger.s3Client.ObjectExists(ctx, chunkKey)
+	return service
+}
+
+func collectEvents(t testing.TB, sequence func(func(Event, error) bool)) []Event {
+	t.Helper()
+	var events []Event
+	sequence(func(event Event, err error) bool {
 		require.NoError(t, err)
-		assert.True(t, exists)
-	}
+		events = append(events, event)
+		return true
+	})
+	return events
 }
 
-// Example demonstrates basic usage of the tales library
-func Example() {
-	mockServer := s3mock.New("example-bucket", "us-east-1")
-	defer mockServer.Close()
-
-	logger, err := New(
-		"example-bucket",
-		"us-east-1",
-		WithPrefix("events"),
-		WithInterval(5*time.Minute),
-		WithBuffer(1000),
-		WithClient(func(cfg s3.Config) (s3.Client, error) {
-			return s3.NewMockClient(mockServer, cfg)
-		}),
-	)
-	if err != nil {
-		log.Fatal(err)
+func eventTexts(events []Event) []string {
+	texts := make([]string, len(events))
+	for i := range events {
+		texts[i] = events[i].Text()
 	}
-	defer logger.Close()
-
-	logger.Log("Player joined the game", 12345)
-	logger.Log("Player moved to position (100, 200)", 12345)
-	logger.Log("Player attacked monster", 12345, 67890)
-	logger.Log("Monster died", 67890)
-	logger.Log("Player gained 100 XP", 12345)
-
-	from := time.Now().Add(-1 * time.Hour)
-	to := time.Now().Add(1 * time.Hour)
-
-	fmt.Println("Events for player 12345:")
-	var count int
-	for _, text := range logger.Query(from, to, 12345) {
-		fmt.Printf("- %s\n", text)
-		count++
-	}
-	fmt.Printf("Total events: %d\n", count)
-
-	fmt.Println("\nEvents involving both player 12345 and monster 67890:")
-	count = 0
-	for _, text := range logger.Query(from, to, 12345, 67890) {
-		fmt.Printf("- %s\n", text)
-		count++
-	}
-	fmt.Printf("Total intersection events: %d\n", count)
-
-	// Output:
-	// Events for player 12345:
-	// - Player joined the game
-	// - Player moved to position (100, 200)
-	// - Player attacked monster
-	// - Player gained 100 XP
-	// Total events: 4
-	//
-	// Events involving both player 12345 and monster 67890:
-	// - Player attacked monster
-	// Total intersection events: 1
+	return texts
 }
 
-func newService() (*Service, error) {
-	mockS3 := s3mock.New("test-bucket", "us-east-1")
-
-	return New(
-		"test-bucket",
-		"us-east-1",
-		WithPrefix("test-prefix"),
-		WithInterval(1*time.Minute),
-		WithBuffer(1024*1024),
-		WithClient(func(config s3.Config) (s3.Client, error) {
-			return s3.NewMockClient(mockS3, config)
-		}),
-	)
+func countMethod(server *s3mock.Server, method, contains string) int {
+	count := 0
+	for _, request := range server.GetRequestsWithMethod(method) {
+		if strings.Contains(request.Query, "list-type=2") && strings.Contains(request.Query, contains) {
+			count++
+		}
+	}
+	return count
 }
 
-type countingClient struct {
-	s3.Client
-	ranges int
+func countPath(server *s3mock.Server, method, contains string) int {
+	count := 0
+	for _, request := range server.GetRequestsWithMethod(method) {
+		if strings.Contains(request.Path, contains) {
+			count++
+		}
+	}
+	return count
 }
 
-func (c *countingClient) DownloadRange(ctx context.Context, key string, start, end int64) ([]byte, error) {
-	c.ranges++
-	return c.Client.DownloadRange(ctx, key, start, end)
+type failingClient struct {
+	internals3.Client
+	failManifest bool
+}
+
+func (c *failingClient) Upload(ctx context.Context, key string, data []byte) (string, error) {
+	if c.failManifest && strings.HasSuffix(key, "/manifest.json") {
+		return "", fmt.Errorf("injected manifest failure")
+	}
+	return c.Client.Upload(ctx, key, data)
+}
+
+type ambiguousClient struct {
+	internals3.Client
+	failManifest bool
+}
+
+type suffixFailClient struct {
+	internals3.Client
+	suffix string
+	fail   bool
+}
+
+type deleteFailClient struct {
+	internals3.Client
+	fail bool
+}
+
+func (c *deleteFailClient) Delete(ctx context.Context, key string) error {
+	if c.fail {
+		c.fail = false
+		return fmt.Errorf("injected delete failure")
+	}
+	return c.Client.Delete(ctx, key)
+}
+
+func (c *suffixFailClient) Upload(ctx context.Context, key string, data []byte) (string, error) {
+	if c.fail && strings.HasSuffix(key, c.suffix) {
+		return "", fmt.Errorf("injected upload failure")
+	}
+	return c.Client.Upload(ctx, key, data)
+}
+
+func (c *ambiguousClient) Upload(ctx context.Context, key string, data []byte) (string, error) {
+	etag, err := c.Client.Upload(ctx, key, data)
+	if err == nil && c.failManifest && strings.HasSuffix(key, "/manifest.json") {
+		c.failManifest = false
+		return "", fmt.Errorf("ambiguous manifest response")
+	}
+	return etag, err
+}
+
+type blockingListClient struct {
+	internals3.Client
+	started chan struct{}
+	release chan struct{}
+}
+
+func (c *blockingListClient) List(ctx context.Context, prefix string) iter.Seq2[internals3.Object, error] {
+	return func(yield func(internals3.Object, error) bool) {
+		close(c.started)
+		select {
+		case <-c.release:
+		case <-ctx.Done():
+			yield(internals3.Object{}, ctx.Err())
+			return
+		}
+		c.Client.List(ctx, prefix)(yield)
+	}
 }

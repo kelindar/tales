@@ -1,27 +1,32 @@
 package mock
 
 import (
+	"context"
+	"fmt"
 	"iter"
 	"sync"
 	"time"
+
+	"github.com/kelindar/tales"
+	"github.com/kelindar/tales/internal/codec"
 )
 
-// Service provides an in-memory circular buffer based logger for testing.
+// Service is an in-memory implementation of tales.Manager for tests.
 type Service struct {
 	mu       sync.RWMutex
 	capacity int
 	buf      []logEntry
 	next     int
 	size     int
+	closed   bool
 }
 
 type logEntry struct {
-	ts     time.Time
-	text   string
-	actors []uint32
+	day   time.Time
+	entry codec.LogEntry
 }
 
-// NewService creates a new in-memory service with the given capacity.
+// NewService creates a fixed-capacity in-memory event log.
 func NewService(capacity int) *Service {
 	if capacity <= 0 {
 		capacity = 1
@@ -29,15 +34,22 @@ func NewService(capacity int) *Service {
 	return &Service{capacity: capacity, buf: make([]logEntry, capacity)}
 }
 
-// Log stores a log entry in the circular buffer.
 func (s *Service) Log(text string, actors ...uint32) error {
-	if len(text) == 0 || len(actors) == 0 {
-		return nil
+	if text == "" || len(actors) == 0 {
+		return fmt.Errorf("invalid event")
+	}
+	now := time.Now().UTC()
+	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	entry, err := codec.NewLogEntry(uint32(now.Sub(day)/time.Millisecond), text, actors)
+	if err != nil {
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	entry := logEntry{ts: time.Now(), text: text, actors: append([]uint32(nil), actors...)}
-	s.buf[s.next] = entry
+	if s.closed {
+		return fmt.Errorf("tales service is closed")
+	}
+	s.buf[s.next] = logEntry{day: day, entry: entry}
 	s.next = (s.next + 1) % s.capacity
 	if s.size < s.capacity {
 		s.size++
@@ -45,67 +57,83 @@ func (s *Service) Log(text string, actors ...uint32) error {
 	return nil
 }
 
-// Query returns entries containing all specified actors within the time range.
-func (s *Service) Query(from, to time.Time, actors ...uint32) iter.Seq2[time.Time, string] {
-	return func(yield func(time.Time, string) bool) {
-		if len(actors) == 0 {
+func (s *Service) Query(ctx context.Context, from, to time.Time, actors ...uint32) iter.Seq2[tales.Event, error] {
+	return func(yield func(tales.Event, error) bool) {
+		if ctx == nil || from.After(to) || len(actors) == 0 {
+			yield(tales.Event{}, fmt.Errorf("invalid query arguments"))
 			return
 		}
-
 		s.mu.RLock()
-		defer s.mu.RUnlock()
-		if s.size == 0 {
+		if s.closed {
+			s.mu.RUnlock()
+			yield(tales.Event{}, fmt.Errorf("tales service is closed"))
 			return
 		}
-
-		// Determine the oldest entry in the circular buffer
-		idx := s.next - s.size
-		if idx < 0 {
-			idx += s.capacity
+		index := s.next - s.size
+		if index < 0 {
+			index += s.capacity
 		}
-
-		for i := 0; i < s.size; i++ {
-			e := s.buf[idx]
-			idx = (idx + 1) % s.capacity
-
-			switch {
-			case e.ts.Before(from), e.ts.After(to):
+		entries := make([]logEntry, 0, s.size)
+		for range s.size {
+			entries = append(entries, s.buf[index])
+			index = (index + 1) % s.capacity
+		}
+		s.mu.RUnlock()
+		for _, entry := range entries {
+			if err := ctx.Err(); err != nil {
+				yield(tales.Event{}, err)
+				return
+			}
+			event := codec.NewEvent(entry.day, entry.entry)
+			if event.Time().Before(from) || event.Time().After(to) || !containsAll(entry.entry, actors) {
 				continue
-			case !containsAll(e.actors, actors):
-				continue
-			case !yield(e.ts, e.text):
+			}
+			if !yield(event, nil) {
 				return
 			}
 		}
 	}
 }
 
-func containsAll(have, want []uint32) bool {
-	if len(want) == 0 {
-		return false
+func containsAll(entry codec.LogEntry, actors []uint32) bool {
+	have := make(map[uint32]struct{})
+	for actor := range entry.Actors() {
+		have[actor] = struct{}{}
 	}
-	for _, w := range want {
-		found := false
-		for _, h := range have {
-			if h == w {
-				found = true
-				break
-			}
-		}
-		if !found {
+	for _, actor := range actors {
+		if _, ok := have[actor]; !ok {
 			return false
 		}
 	}
 	return true
 }
 
-// Close resets the buffer and releases any held resources.
+func (s *Service) Sync(ctx context.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("nil context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return fmt.Errorf("tales service is closed")
+	}
+	return nil
+}
+
 func (s *Service) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		return fmt.Errorf("tales service is closed")
+	}
 	s.buf = nil
 	s.next = 0
 	s.size = 0
-	s.capacity = 0
+	s.closed = true
 	return nil
 }
+
+var _ tales.Manager = (*Service)(nil)
