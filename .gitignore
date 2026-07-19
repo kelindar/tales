@@ -1,5 +1,6 @@
 .vscode
 .cursor
+.DS_Store
 *.test
 *.go
 *.gob
