@@ -19,6 +19,8 @@ func TestBatchSnapshot(t *testing.T) {
 	first, _ := codec.NewLogEntry(10, "a", []uint32{9, 1})
 	second, _ := codec.NewLogEntry(10, "b", []uint32{1})
 	require.NoError(t, buf.Add(day, first))
+	require.Equal(t, day, buf.Day())
+	require.Positive(t, buf.Bytes())
 	require.NoError(t, buf.Add(day, second))
 	require.Error(t, buf.Add(day, first))
 
@@ -37,6 +39,8 @@ func TestBatchSnapshot(t *testing.T) {
 	require.True(t, bitmap.Contains(0))
 	require.True(t, bitmap.Contains(1))
 	require.Zero(t, buf.Size())
+	require.Zero(t, buf.Bytes())
+	require.True(t, buf.Day().IsZero())
 
 	raw, err := c.Decompress(batch.Data)
 	require.NoError(t, err)

@@ -5,6 +5,7 @@ package s3
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"testing"
 
@@ -14,7 +15,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestS3ClientBasics(t *testing.T) {
+func TestClient(t *testing.T) {
+	tests := map[string]func(*testing.T){
+		"basics":        testClientBasics,
+		"upload reader": testUploadReader,
+		"list prefix":   testListPrefix,
+		"new client":    testNewClient,
+	}
+	for name, fn := range tests {
+		t.Run(name, fn)
+	}
+}
+
+func testClientBasics(t *testing.T) {
 	server := s3mock.New("test-bucket", "us-east-1")
 	defer server.Close()
 
@@ -26,7 +39,6 @@ func TestS3ClientBasics(t *testing.T) {
 	key := "file.txt"
 	data := []byte("hello world")
 
-	// Upload and download
 	etag, err := client.Upload(ctx, key, data)
 	require.NoError(t, err)
 	require.NotEmpty(t, etag)
@@ -35,7 +47,6 @@ func TestS3ClientBasics(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, data, out)
 
-	// Range
 	part, err := client.DownloadRange(ctx, key, etag, 0, int64(len(data)))
 	require.NoError(t, err)
 	assert.Equal(t, data, part)
@@ -61,7 +72,66 @@ func TestS3ClientBasics(t *testing.T) {
 	require.True(t, IsNoSuchKey(err))
 }
 
-func TestNoSuchKey(t *testing.T) {
-	assert.True(t, IsNoSuchKey(fs.ErrNotExist))
-	assert.False(t, IsNoSuchKey(nil))
+func testUploadReader(t *testing.T) {
+	server := s3mock.New("test-bucket", "us-east-1")
+	defer server.Close()
+	cfg := NewMockConfig(server, "test-bucket", "")
+	client, err := NewMockClient(server, cfg)
+	require.NoError(t, err)
+
+	data := []byte("streamed payload")
+	etag, err := client.UploadReader(context.Background(), "stream.bin", NewMultiReader(data), int64(len(data)))
+	require.NoError(t, err)
+	require.NotEmpty(t, etag)
+
+	out, err := client.Download(context.Background(), "stream.bin")
+	require.NoError(t, err)
+	assert.Equal(t, data, out)
+}
+
+func testListPrefix(t *testing.T) {
+	server := s3mock.New("test-bucket", "us-east-1")
+	defer server.Close()
+	cfg := NewMockConfig(server, "test-bucket", "root")
+	client, err := NewMockClient(server, cfg)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	_, err = client.Upload(ctx, "a/one.txt", []byte("1"))
+	require.NoError(t, err)
+	_, err = client.Upload(ctx, "b/two.txt", []byte("2"))
+	require.NoError(t, err)
+
+	var keys []string
+	for object, err := range client.List(ctx, "") {
+		require.NoError(t, err)
+		keys = append(keys, object.Key)
+	}
+	assert.NotEmpty(t, keys)
+}
+
+func testNewClient(t *testing.T) {
+	_, err := NewClient(Config{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "credentials")
+}
+
+func TestErrors(t *testing.T) {
+	t.Run("no such key", func(t *testing.T) {
+		assert.True(t, IsNoSuchKey(fs.ErrNotExist))
+		assert.True(t, IsNoSuchKey(fmt.Errorf("NoSuchKey")))
+		assert.True(t, IsNoSuchKey(fmt.Errorf("status 404")))
+		assert.False(t, IsNoSuchKey(nil))
+	})
+	t.Run("compose unsupported", func(t *testing.T) {
+		assert.True(t, IsComposeUnsupported(fmt.Errorf("NotImplemented")))
+		assert.True(t, IsComposeUnsupported(fmt.Errorf("not supported")))
+		assert.True(t, IsComposeUnsupported(fmt.Errorf("HTTP 501")))
+		assert.False(t, IsComposeUnsupported(fmt.Errorf("timeout")))
+	})
+	t.Run("operation wrap", func(t *testing.T) {
+		err := ErrS3Operation{Operation: "write", Err: fs.ErrNotExist}
+		assert.Contains(t, err.Error(), "write")
+		assert.ErrorIs(t, err, fs.ErrNotExist)
+	})
 }

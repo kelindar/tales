@@ -28,6 +28,13 @@ func TestEventFrame(t *testing.T) {
 	clone := event.Clone()
 	event.Bytes()[0] = 'x'
 	require.Equal(t, byte('{'), clone.Bytes()[0])
+
+	count := 0
+	for range event.Actors() {
+		count++
+		break
+	}
+	require.Equal(t, 1, count)
 }
 
 func TestFrameValidation(t *testing.T) {

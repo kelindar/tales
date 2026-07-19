@@ -336,6 +336,71 @@ func TestWriterID(t *testing.T) {
 	require.Equal(t, "a430d84680aabd0b", a.WriterID)
 }
 
+func TestConfig(t *testing.T) {
+	cfg := config{S3: internals3.Config{Bucket: "b", Region: "r"}, WriterID: "0123456789abcdef"}
+	WithBuffer(64)(&cfg)
+	WithBackblaze()(&cfg)
+	WithKey(nil)(&cfg)
+	WithInterval(2 * time.Minute)(&cfg)
+	cfg.setDefaults()
+	require.Equal(t, 64, cfg.BufferSize)
+	require.Equal(t, "b2", cfg.S3.Service)
+	require.NoError(t, cfg.validate())
+
+	require.Error(t, (&config{S3: internals3.Config{Region: "r"}, WriterID: "0123456789abcdef", ChunkInterval: time.Minute, BufferSize: 1}).validate())
+	require.Error(t, (&config{S3: internals3.Config{Bucket: "b"}, WriterID: "0123456789abcdef", ChunkInterval: time.Minute, BufferSize: 1}).validate())
+	require.Error(t, (&config{S3: internals3.Config{Bucket: "b", Region: "r"}, WriterID: "0123456789abcdef", ChunkInterval: time.Second, BufferSize: 1}).validate())
+	require.Error(t, (&config{S3: internals3.Config{Bucket: "b", Region: "r"}, WriterID: "0123456789abcdef", ChunkInterval: time.Minute, BufferSize: 0}).validate())
+	require.Error(t, (&config{S3: internals3.Config{Bucket: "b", Region: "r"}, WriterID: "short", ChunkInterval: time.Minute, BufferSize: 1}).validate())
+}
+
+func TestLogGuards(t *testing.T) {
+	server := s3mock.New("events", "us-east-1")
+	defer server.Close()
+	service := testService(t, server, "guards", "writer", WithBuffer(1))
+	defer service.Close()
+
+	require.Error(t, service.Log(""))
+	require.Error(t, service.Log("x"))
+	require.Error(t, service.Log("x", make([]uint32, 1001)...))
+	require.NoError(t, service.Log("one", 1))
+	require.NoError(t, service.Log("two", 1)) // forces flush via accept buffer full path
+	require.NoError(t, service.Sync(context.Background()))
+
+	for _, err := range service.Query(nil, time.Now().Add(-time.Hour), time.Now(), 1) {
+		require.Error(t, err)
+		break
+	}
+	for _, err := range service.Query(context.Background(), time.Now().Add(-time.Hour), time.Now()) {
+		require.Error(t, err)
+		break
+	}
+}
+
+func TestDayRollover(t *testing.T) {
+	server := s3mock.New("events", "us-east-1")
+	defer server.Close()
+	now := time.Date(2026, 7, 19, 23, 59, 0, 0, time.UTC)
+	current := now
+	service := testService(t, server, "rollover", "writer", func(c *config) {
+		c.now = func() time.Time { return current }
+	})
+	defer service.Close()
+
+	require.NoError(t, service.Log("day-one", 1))
+	current = now.Add(2 * time.Minute) // next UTC day
+	require.NoError(t, service.Log("day-two", 1))
+	require.NoError(t, service.Sync(context.Background()))
+
+	events := collectEvents(t, service.Query(context.Background(), now.Add(-time.Hour), current.Add(time.Hour), 1))
+	require.Equal(t, []string{"day-one", "day-two"}, eventTexts(events))
+}
+
+func TestNewClientDefault(t *testing.T) {
+	_, err := New("bucket", "us-east-1")
+	require.Error(t, err)
+}
+
 func TestLifecycle(t *testing.T) {
 	server := s3mock.New("events", "us-east-1")
 	defer server.Close()

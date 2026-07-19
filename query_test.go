@@ -1,10 +1,12 @@
 package tales
 
 import (
+	"bytes"
 	"context"
 	"testing"
 	"time"
 
+	"github.com/kelindar/roaring"
 	s3mock "github.com/kelindar/s3/mock"
 	"github.com/kelindar/tales/internal/codec"
 	"github.com/stretchr/testify/require"
@@ -116,4 +118,44 @@ func TestQueryEdges(t *testing.T) {
 	require.Empty(t, collectEvents(t, service.Query(context.Background(), now, now, 1)))
 	require.NoError(t, service.Log("one", 1, 2))
 	require.Equal(t, []string{"one"}, eventTexts(collectEvents(t, service.Query(context.Background(), now, now, 1, 1))))
+}
+
+func TestQueryHelpers(t *testing.T) {
+	entry, err := codec.NewLogEntry(10, "hi", []uint32{1, 2})
+	require.NoError(t, err)
+	require.True(t, containsActors(entry, []uint32{1}))
+	require.True(t, containsActors(entry, []uint32{1, 2}))
+	require.False(t, containsActors(entry, []uint32{1, 3}))
+	require.False(t, containsActors(entry, nil))
+
+	require.Equal(t, uint64(0), compactEntries(&codec.CompactMetadata{}))
+	require.Equal(t, uint64(5), compactEntries(&codec.CompactMetadata{
+		Sources: []codec.CompactSource{{Base: 2, Entries: 3}},
+	}))
+
+	_, err = decodeBitmap([]byte{1, 2, 3}, 1)
+	require.Error(t, err)
+
+	bm := roaring.New()
+	bm.Set(0)
+	bm.Set(5)
+	var buf bytes.Buffer
+	_, err = bm.WriteTo(&buf)
+	require.NoError(t, err)
+	_, err = decodeBitmap(buf.Bytes(), 1)
+	require.Error(t, err)
+	ok, err := decodeBitmap(buf.Bytes(), 10)
+	require.NoError(t, err)
+	require.True(t, ok.Contains(5))
+
+	day := time.Date(2026, 7, 19, 0, 0, 0, 0, time.UTC)
+	selected := roaring.New()
+	selected.Set(0)
+	refs, err := collectRaw(entry, 1, day, day, day.Add(time.Hour), []uint32{1}, "writer", 0, selected)
+	require.NoError(t, err)
+	require.Len(t, refs, 1)
+
+	refs, err = collectRaw(entry, 1, day, day.Add(time.Hour), day.Add(2*time.Hour), []uint32{1}, "writer", 0, nil)
+	require.NoError(t, err)
+	require.Empty(t, refs)
 }
