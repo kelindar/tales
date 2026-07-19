@@ -19,6 +19,13 @@ import (
 
 const cleanupGrace = 24 * time.Hour
 
+type sourceChunk struct {
+	writer string
+	chunk  codec.ChunkEntry
+	key    string
+	base   uint64
+}
+
 // Compact commits an immutable merged index for an eligible historical UTC day.
 func (l *Service) Compact(ctx context.Context, value time.Time) error {
 	if ctx == nil {
@@ -48,133 +55,120 @@ func (l *Service) Compact(ctx context.Context, value time.Time) error {
 	if err != nil {
 		return err
 	}
-	type sourceChunk struct {
-		writer string
-		chunk  codec.ChunkEntry
-		key    string
-		base   uint64
-	}
-	var chunks []sourceChunk
-	var total uint64
-	for _, manifest := range manifests {
-		for _, chunk := range manifest.Chunks {
-			if total+uint64(chunk.Entries) > uint64(math.MaxUint32)+1 {
-				return fmt.Errorf("daily ordinal capacity exceeded")
-			}
-			chunks = append(chunks, sourceChunk{writer: manifest.Writer, chunk: chunk, key: keyOfChunk(dayName, manifest.Writer, uint64(chunk.Sequence)), base: total})
-			total += uint64(chunk.Entries)
-		}
+	chunks, total, err := collectSourceChunks(manifests, dayName)
+	if err != nil {
+		return err
 	}
 	if len(chunks) == 0 {
 		return nil
 	}
 
-	merged := make(map[uint32]*roaring.Bitmap)
-	for _, source := range chunks {
-		actors := make([]uint32, 0, len(source.chunk.Actors))
-		for actor := range source.chunk.Actors {
-			actors = append(actors, actor)
-		}
-		slices.Sort(actors)
-		for _, actor := range actors {
-			r := source.chunk.Actors[actor]
-			data, err := l.s3Client.DownloadRange(ctx, source.key, source.chunk.ETag, r.Offset, r.Size)
-			if err != nil {
-				return err
-			}
-			bitmap, err := decodeBitmap(data, uint64(source.chunk.Entries))
-			if err != nil {
-				return fmt.Errorf("decode source bitmap: %w", err)
-			}
-			destination := merged[actor]
-			if destination == nil {
-				destination = roaring.New()
-				merged[actor] = destination
-			}
-			var overflow bool
-			bitmap.Range(func(ordinal uint32) bool {
-				shifted := source.base + uint64(ordinal)
-				if shifted > math.MaxUint32 {
-					overflow = true
-					return false
-				}
-				destination.Set(uint32(shifted))
-				return true
-			})
-			if overflow {
-				return fmt.Errorf("daily ordinal capacity exceeded")
-			}
-		}
+	merged, err := l.mergeSourceBitmaps(ctx, chunks)
+	if err != nil {
+		return err
 	}
 
+	sources, parts, copied := buildCompactSources(chunks, l.config.composeParts)
+	if err := l.composeCompactPayload(ctx, dayName, sources, parts, copied); err != nil {
+		return err
+	}
+	index, actorRanges, err := l.uploadCompactIndex(ctx, dayName, merged, total)
+	if err != nil {
+		return err
+	}
+	if err := l.validateDirectPayloads(ctx, sources); err != nil {
+		return err
+	}
+
+	meta := &codec.CompactMetadata{
+		Day:         dayName,
+		PublishedAt: l.config.now().UTC().UnixMilli(),
+		Index:       index,
+		Actors:      actorRanges,
+		Sources:     sources,
+	}
+	return l.commitCompactMetadata(ctx, meta)
+}
+
+func buildCompactSources(chunks []sourceChunk, partLimit int) ([]codec.CompactSource, []s3lib.CopyPart, []int) {
 	sources := make([]codec.CompactSource, len(chunks))
-	parts := make([]s3lib.CopyPart, 0, min(len(chunks), l.config.composeParts))
+	parts := make([]s3lib.CopyPart, 0, min(len(chunks), partLimit))
 	copied := make([]int, 0, cap(parts))
 	for i, source := range chunks {
 		sources[i] = codec.CompactSource{
-			Writer:   source.writer,
-			Sequence: source.chunk.Sequence,
-			Base:     source.base,
-			Entries:  source.chunk.Entries,
-			Time:     source.chunk.Time,
-			Payload:  codec.ObjectRange{Key: source.key, ETag: source.chunk.ETag, Offset: source.chunk.Data.Offset, Size: source.chunk.Data.Size},
-			Source:   source.key,
+			Writer: source.writer, Sequence: source.chunk.Sequence, Base: source.base,
+			Entries: source.chunk.Entries, Time: source.chunk.Time,
+			Payload: codec.ObjectRange{Key: source.key, ETag: source.chunk.ETag, Offset: source.chunk.Data.Offset, Size: source.chunk.Data.Size},
+			Source:  source.key,
 		}
-		if source.chunk.Data.Size >= s3lib.MinPartSize && len(parts) < l.config.composeParts {
+		if source.chunk.Data.Size >= s3lib.MinPartSize && len(parts) < partLimit {
 			parts = append(parts, s3lib.CopyPart{SourceKey: source.key, ETag: source.chunk.ETag, Offset: source.chunk.Data.Offset, Size: source.chunk.Data.Size})
 			copied = append(copied, i)
 		}
 	}
+	return sources, parts, copied
+}
 
-	if len(parts) > 0 {
-		etag, err := l.s3Client.Compose(ctx, keyOfCompactData(dayName), parts)
-		if err != nil && !s3.IsComposeUnsupported(err) {
-			return err
-		}
-		if err == nil {
-			var offset int64
-			for i, sourceIndex := range copied {
-				sources[sourceIndex].Payload = codec.ObjectRange{Key: keyOfCompactData(dayName), ETag: etag, Offset: offset, Size: parts[i].Size}
-				sources[sourceIndex].Copied = true
-				offset += parts[i].Size
-			}
-			object, err := l.s3Client.Stat(ctx, keyOfCompactData(dayName))
-			if err != nil {
-				return err
-			}
-			if object.ETag != etag || object.Size != offset {
-				return fmt.Errorf("composed payload validation failed")
-			}
-		}
+func (l *Service) composeCompactPayload(ctx context.Context, day string, sources []codec.CompactSource, parts []s3lib.CopyPart, copied []int) error {
+	if len(parts) == 0 {
+		return nil
 	}
+	key := keyOfCompactData(day)
+	etag, err := l.s3Client.Compose(ctx, key, parts)
+	if err != nil {
+		if s3.IsComposeUnsupported(err) {
+			return nil
+		}
+		return err
+	}
+	var offset int64
+	for i, sourceIndex := range copied {
+		sources[sourceIndex].Payload = codec.ObjectRange{Key: key, ETag: etag, Offset: offset, Size: parts[i].Size}
+		sources[sourceIndex].Copied = true
+		offset += parts[i].Size
+	}
+	object, err := l.s3Client.Stat(ctx, key)
+	if err != nil {
+		return err
+	}
+	if object.ETag != etag || object.Size != offset {
+		return fmt.Errorf("composed payload validation failed")
+	}
+	return nil
+}
 
-	actorIDs := make([]uint32, 0, len(merged))
+func (l *Service) uploadCompactIndex(ctx context.Context, day string, merged map[uint32]*roaring.Bitmap, entries uint64) (codec.ObjectRange, map[uint32]codec.Range, error) {
+	actors := make([]uint32, 0, len(merged))
 	for actor := range merged {
-		actorIDs = append(actorIDs, actor)
+		actors = append(actors, actor)
 	}
-	slices.Sort(actorIDs)
-	actorRanges := make(map[uint32]codec.Range, len(actorIDs))
-	var indexData []byte
-	for _, actor := range actorIDs {
-		data := merged[actor].ToBytes()
-		actorRanges[actor] = codec.Range{Offset: int64(len(indexData)), Size: int64(len(data))}
-		indexData = append(indexData, data...)
-		if _, err := decodeBitmap(data, total); err != nil {
-			return fmt.Errorf("validate generated compact index: %w", err)
+	slices.Sort(actors)
+	ranges := make(map[uint32]codec.Range, len(actors))
+	var data []byte
+	for _, actor := range actors {
+		bitmap := merged[actor].ToBytes()
+		ranges[actor] = codec.Range{Offset: int64(len(data)), Size: int64(len(bitmap))}
+		data = append(data, bitmap...)
+		if _, err := decodeBitmap(bitmap, entries); err != nil {
+			return codec.ObjectRange{}, nil, fmt.Errorf("validate generated compact index: %w", err)
 		}
 	}
-	indexETag, err := l.s3Client.Upload(ctx, keyOfCompactIndex(dayName), indexData)
+	key := keyOfCompactIndex(day)
+	etag, err := l.s3Client.Upload(ctx, key, data)
 	if err != nil {
-		return err
+		return codec.ObjectRange{}, nil, err
 	}
-	indexObject, err := l.s3Client.Stat(ctx, keyOfCompactIndex(dayName))
+	object, err := l.s3Client.Stat(ctx, key)
 	if err != nil {
-		return err
+		return codec.ObjectRange{}, nil, err
 	}
-	if indexObject.ETag != indexETag || indexObject.Size != int64(len(indexData)) {
-		return fmt.Errorf("compacted index validation failed")
+	if object.ETag != etag || object.Size != int64(len(data)) {
+		return codec.ObjectRange{}, nil, fmt.Errorf("compacted index validation failed")
 	}
+	return codec.ObjectRange{Key: key, ETag: etag, Size: int64(len(data))}, ranges, nil
+}
 
+func (l *Service) validateDirectPayloads(ctx context.Context, sources []codec.CompactSource) error {
 	for _, source := range sources {
 		if source.Copied {
 			continue
@@ -187,27 +181,93 @@ func (l *Service) Compact(ctx context.Context, value time.Time) error {
 			return fmt.Errorf("direct payload validation failed")
 		}
 	}
+	return nil
+}
 
-	meta := &codec.CompactMetadata{
-		Day:         dayName,
-		PublishedAt: l.config.now().UTC().UnixMilli(),
-		Index:       codec.ObjectRange{Key: keyOfCompactIndex(dayName), ETag: indexETag, Size: int64(len(indexData))},
-		Actors:      actorRanges,
-		Sources:     sources,
-	}
-	if err := codec.ValidateCompact(meta, dayName); err != nil {
+func (l *Service) commitCompactMetadata(ctx context.Context, meta *codec.CompactMetadata) error {
+	if err := codec.ValidateCompact(meta, meta.Day); err != nil {
 		return err
 	}
 	encoded, err := codec.Encode(meta)
 	if err != nil {
 		return err
 	}
-	if _, err := l.s3Client.Upload(ctx, keyOfCompactMeta(dayName), encoded); err != nil {
+	if _, err := l.s3Client.Upload(ctx, keyOfCompactMeta(meta.Day), encoded); err != nil {
 		return err
 	}
 	l.cacheMu.Lock()
-	l.compactMeta[dayName] = meta
+	l.compactMeta[meta.Day] = meta
 	l.cacheMu.Unlock()
+	return nil
+}
+
+func collectSourceChunks(manifests []*codec.Manifest, day string) ([]sourceChunk, uint64, error) {
+	var chunks []sourceChunk
+	var total uint64
+	for _, manifest := range manifests {
+		for _, chunk := range manifest.Chunks {
+			if total+uint64(chunk.Entries) > uint64(math.MaxUint32)+1 {
+				return nil, 0, fmt.Errorf("daily ordinal capacity exceeded")
+			}
+			chunks = append(chunks, sourceChunk{writer: manifest.Writer, chunk: chunk, key: keyOfChunk(day, manifest.Writer, uint64(chunk.Sequence)), base: total})
+			total += uint64(chunk.Entries)
+		}
+	}
+	return chunks, total, nil
+}
+
+func (l *Service) mergeSourceBitmaps(ctx context.Context, chunks []sourceChunk) (map[uint32]*roaring.Bitmap, error) {
+	merged := make(map[uint32]*roaring.Bitmap)
+	for _, source := range chunks {
+		if err := l.mergeSourceBitmap(ctx, source, merged); err != nil {
+			return nil, err
+		}
+	}
+	return merged, nil
+}
+
+func (l *Service) mergeSourceBitmap(ctx context.Context, source sourceChunk, merged map[uint32]*roaring.Bitmap) error {
+	actors := make([]uint32, 0, len(source.chunk.Actors))
+	for actor := range source.chunk.Actors {
+		actors = append(actors, actor)
+	}
+	slices.Sort(actors)
+	for _, actor := range actors {
+		r := source.chunk.Actors[actor]
+		data, err := l.s3Client.DownloadRange(ctx, source.key, source.chunk.ETag, r.Offset, r.Size)
+		if err != nil {
+			return err
+		}
+		bitmap, err := decodeBitmap(data, uint64(source.chunk.Entries))
+		if err != nil {
+			return fmt.Errorf("decode source bitmap: %w", err)
+		}
+		destination := merged[actor]
+		if destination == nil {
+			destination = roaring.New()
+			merged[actor] = destination
+		}
+		if err := shiftBitmap(destination, bitmap, source.base); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func shiftBitmap(destination, source *roaring.Bitmap, base uint64) error {
+	var overflow bool
+	source.Range(func(ordinal uint32) bool {
+		shifted := base + uint64(ordinal)
+		if shifted > math.MaxUint32 {
+			overflow = true
+			return false
+		}
+		destination.Set(uint32(shifted))
+		return true
+	})
+	if overflow {
+		return fmt.Errorf("daily ordinal capacity exceeded")
+	}
 	return nil
 }
 

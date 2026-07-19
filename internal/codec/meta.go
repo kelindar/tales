@@ -140,29 +140,46 @@ func ValidateCompact(meta *CompactMetadata, day string) error {
 	if meta == nil || meta.Day != day || meta.PublishedAt <= 0 || meta.Index.Key == "" || meta.Index.ETag == "" || meta.Index.Offset != 0 || meta.Index.Size <= 0 || len(meta.Sources) == 0 {
 		return fmt.Errorf("invalid compact metadata")
 	}
+	if err := validateCompactSources(meta.Sources); err != nil {
+		return err
+	}
+	if err := validateActorRanges(meta.Actors, meta.Index.Size); err != nil {
+		return fmt.Errorf("compact index: %w", err)
+	}
+	return nil
+}
+
+func validateCompactSources(sources []CompactSource) error {
 	var next uint64
-	for i, source := range meta.Sources {
-		if source.Base != next || !validWriterID(source.Writer) || source.Entries == 0 || source.Time[0] > source.Time[1] || source.Time[1] > MaxMillis || source.Payload.Key == "" || source.Payload.ETag == "" || source.Payload.Offset < 0 || source.Payload.Size <= 0 || source.Payload.Offset > math.MaxInt64-source.Payload.Size || source.Source == "" {
-			return fmt.Errorf("invalid compact source %d", i)
+	for i := range sources {
+		if err := validateCompactSource(sources, i, next); err != nil {
+			return err
 		}
-		if i > 0 {
-			previous := meta.Sources[i-1]
-			if source.Writer < previous.Writer || source.Writer == previous.Writer && source.Sequence != previous.Sequence+1 || source.Writer > previous.Writer && source.Sequence != 0 {
-				return fmt.Errorf("compact sources are not ordered")
-			}
-		} else if source.Sequence != 0 {
-			return fmt.Errorf("compact sources are not ordered")
-		}
-		if !source.Copied && source.Payload.Key != source.Source {
-			return fmt.Errorf("direct compact source %d has mismatched payload", i)
-		}
-		next += uint64(source.Entries)
+		next += uint64(sources[i].Entries)
 		if next > uint64(math.MaxUint32)+1 {
 			return fmt.Errorf("compact ordinal overflow")
 		}
 	}
-	if err := validateActorRanges(meta.Actors, meta.Index.Size); err != nil {
-		return fmt.Errorf("compact index: %w", err)
+	return nil
+}
+
+func validateCompactSource(sources []CompactSource, i int, base uint64) error {
+	source := sources[i]
+	if source.Base != base || !validWriterID(source.Writer) || source.Entries == 0 || source.Time[0] > source.Time[1] || source.Time[1] > MaxMillis || source.Payload.Key == "" || source.Payload.ETag == "" || source.Payload.Offset < 0 || source.Payload.Size <= 0 || source.Payload.Offset > math.MaxInt64-source.Payload.Size || source.Source == "" {
+		return fmt.Errorf("invalid compact source %d", i)
+	}
+	if i == 0 {
+		if source.Sequence != 0 {
+			return fmt.Errorf("compact sources are not ordered")
+		}
+	} else {
+		previous := sources[i-1]
+		if source.Writer < previous.Writer || source.Writer == previous.Writer && source.Sequence != previous.Sequence+1 || source.Writer > previous.Writer && source.Sequence != 0 {
+			return fmt.Errorf("compact sources are not ordered")
+		}
+	}
+	if !source.Copied && source.Payload.Key != source.Source {
+		return fmt.Errorf("direct compact source %d has mismatched payload", i)
 	}
 	return nil
 }

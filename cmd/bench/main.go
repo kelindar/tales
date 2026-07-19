@@ -71,7 +71,6 @@ func main() {
 func newLogger() *tales.Service {
 	server := s3mock.New("bench", "us-east-1")
 	logger, err := tales.New("bench", "us-east-1",
-		tales.WithBuffer(1_000),
 		tales.WithClient(func(config s3.Config) (s3.Client, error) {
 			return s3.NewMockClient(server, config)
 		}),

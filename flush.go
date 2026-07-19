@@ -188,17 +188,8 @@ func (l *Service) invalidateDiscovery(day string) {
 }
 
 func (l *Service) snapshot(ctx context.Context, state *writerState) (querySnapshot, error) {
-	if state.buffer.Size() > 0 {
-		day := dayKey(state.buffer.Day())
-		_, known := state.manifests[day]
-		pendingSameDay := state.pending != nil && state.pending.batch.Day.Equal(state.buffer.Day())
-		if !known && !pendingSameDay {
-			manifest, err := l.downloadManifest(ctx, day, l.config.WriterID)
-			if err != nil {
-				return querySnapshot{}, err
-			}
-			state.manifests[day] = manifest
-		}
+	if err := l.ensureSnapshotManifest(ctx, state); err != nil {
+		return querySnapshot{}, err
 	}
 	snapshot := querySnapshot{cutoffs: make(map[string]writerCutoff)}
 	for day, manifest := range state.manifests {
@@ -207,34 +198,57 @@ func (l *Service) snapshot(ctx context.Context, state *writerState) (querySnapsh
 		}
 	}
 	if pending := state.pending; pending != nil {
-		day := dayKey(pending.batch.Day)
-		snapshot.local = append(snapshot.local, localChunk{day: pending.batch.Day, sequence: pending.sequence, entries: pending.batch.Entries, raw: pending.batch.Raw})
-		if _, ok := snapshot.cutoffs[day]; !ok {
-			cutoff := writerCutoff{}
-			if pending.sequence > 0 {
-				cutoff = writerCutoff{sequence: pending.sequence - 1, committed: true}
-			}
-			snapshot.cutoffs[day] = cutoff
-		}
+		addLocalSnapshot(&snapshot, localChunk{day: pending.batch.Day, sequence: pending.sequence, entries: pending.batch.Entries, raw: pending.batch.Raw})
 	}
-	day, raw, entries := state.buffer.Snapshot()
-	if entries > 0 {
-		key := dayKey(day)
-		sequence := uint64(0)
-		if manifest := state.manifests[key]; manifest != nil {
-			sequence = manifest.NextSequence()
-		}
-		if state.pending != nil && state.pending.batch.Day.Equal(day) {
-			sequence = state.pending.sequence + 1
-		}
-		snapshot.local = append(snapshot.local, localChunk{day: day, sequence: sequence, entries: entries, raw: raw})
-		if _, ok := snapshot.cutoffs[key]; !ok {
-			cutoff := writerCutoff{}
-			if sequence > 0 {
-				cutoff = writerCutoff{sequence: sequence - 1, committed: true}
-			}
-			snapshot.cutoffs[key] = cutoff
-		}
+	if local, ok := activeSnapshot(state); ok {
+		addLocalSnapshot(&snapshot, local)
 	}
 	return snapshot, nil
+}
+
+func (l *Service) ensureSnapshotManifest(ctx context.Context, state *writerState) error {
+	if state.buffer.Size() == 0 {
+		return nil
+	}
+	day := dayKey(state.buffer.Day())
+	_, known := state.manifests[day]
+	pendingSameDay := state.pending != nil && state.pending.batch.Day.Equal(state.buffer.Day())
+	if known || pendingSameDay {
+		return nil
+	}
+	manifest, err := l.downloadManifest(ctx, day, l.config.WriterID)
+	if err != nil {
+		return err
+	}
+	state.manifests[day] = manifest
+	return nil
+}
+
+func activeSnapshot(state *writerState) (localChunk, bool) {
+	day, raw, entries := state.buffer.Snapshot()
+	if entries == 0 {
+		return localChunk{}, false
+	}
+	key := dayKey(day)
+	var sequence uint64
+	if manifest := state.manifests[key]; manifest != nil {
+		sequence = manifest.NextSequence()
+	}
+	if state.pending != nil && state.pending.batch.Day.Equal(day) {
+		sequence = state.pending.sequence + 1
+	}
+	return localChunk{day: day, sequence: sequence, entries: entries, raw: raw}, true
+}
+
+func addLocalSnapshot(snapshot *querySnapshot, local localChunk) {
+	snapshot.local = append(snapshot.local, local)
+	day := dayKey(local.day)
+	if _, ok := snapshot.cutoffs[day]; ok {
+		return
+	}
+	cutoff := writerCutoff{}
+	if local.sequence > 0 {
+		cutoff = writerCutoff{sequence: local.sequence - 1, committed: true}
+	}
+	snapshot.cutoffs[day] = cutoff
 }

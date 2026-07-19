@@ -126,35 +126,10 @@ func (l *Service) queryWriterDay(ctx context.Context, snapshot querySnapshot, da
 	if err != nil {
 		return nil, err
 	}
-	fromMillis, toMillis := queryMillis(day, from, to)
 	var refs []eventRef
 	for _, manifest := range manifests {
 		for _, chunk := range manifest.Chunks {
-			sequence := uint64(chunk.Sequence)
-			if manifest.Writer == l.config.WriterID {
-				if cutoff, ok := snapshot.cutoffs[dayName]; ok && (!cutoff.committed || sequence > cutoff.sequence) {
-					continue
-				}
-			}
-			if !chunk.Between(fromMillis, toMillis) {
-				continue
-			}
-			selected, err := l.chunkOrdinals(ctx, keyOfChunk(dayName, manifest.Writer, sequence), chunk.ETag, chunk.Actors, uint64(chunk.Entries), actors)
-			if err != nil {
-				return nil, err
-			}
-			if selected == nil || selected.Count() == 0 {
-				continue
-			}
-			compressed, err := l.s3Client.DownloadRange(ctx, keyOfChunk(dayName, manifest.Writer, sequence), chunk.ETag, chunk.Data.Offset, chunk.Data.Size)
-			if err != nil {
-				return nil, err
-			}
-			raw, err := l.codec.Decompress(compressed)
-			if err != nil {
-				return nil, fmt.Errorf("decompress writer chunk: %w", err)
-			}
-			chunkRefs, err := collectRaw(raw, chunk.Entries, day, from, to, actors, manifest.Writer, sequence, selected)
+			chunkRefs, err := l.queryWriterChunk(ctx, snapshot, day, dayName, from, to, actors, manifest.Writer, chunk)
 			if err != nil {
 				return nil, err
 			}
@@ -162,6 +137,33 @@ func (l *Service) queryWriterDay(ctx context.Context, snapshot querySnapshot, da
 		}
 	}
 	return refs, nil
+}
+
+func (l *Service) queryWriterChunk(ctx context.Context, snapshot querySnapshot, day time.Time, dayName string, from, to time.Time, actors []uint32, writer string, chunk codec.ChunkEntry) ([]eventRef, error) {
+	sequence := uint64(chunk.Sequence)
+	if writer == l.config.WriterID {
+		if cutoff, ok := snapshot.cutoffs[dayName]; ok && (!cutoff.committed || sequence > cutoff.sequence) {
+			return nil, nil
+		}
+	}
+	fromMillis, toMillis := queryMillis(day, from, to)
+	if !chunk.Between(fromMillis, toMillis) {
+		return nil, nil
+	}
+	key := keyOfChunk(dayName, writer, sequence)
+	selected, err := l.chunkOrdinals(ctx, key, chunk.ETag, chunk.Actors, uint64(chunk.Entries), actors)
+	if err != nil || selected == nil || selected.Count() == 0 {
+		return nil, err
+	}
+	compressed, err := l.s3Client.DownloadRange(ctx, key, chunk.ETag, chunk.Data.Offset, chunk.Data.Size)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := l.codec.Decompress(compressed)
+	if err != nil {
+		return nil, fmt.Errorf("decompress writer chunk: %w", err)
+	}
+	return collectRaw(raw, chunk.Entries, day, from, to, actors, writer, sequence, selected)
 }
 
 func (l *Service) queryCompactDay(ctx context.Context, day, from, to time.Time, actors []uint32, meta *codec.CompactMetadata) ([]eventRef, error) {

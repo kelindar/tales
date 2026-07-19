@@ -89,6 +89,7 @@ type Service struct {
 	codec    *codec.Codec
 	commands chan command
 	worker   sync.WaitGroup
+	logs     sync.Pool
 
 	lifecycle sync.Mutex
 	active    sync.WaitGroup
@@ -129,6 +130,7 @@ func New(bucket, region string, opts ...Option) (*Service, error) {
 		discovery:   make(map[string]discoveryCache),
 		compactMeta: make(map[string]*codec.CompactMetadata),
 	}
+	service.logs.New = func() any { return &logCmd{reply: make(chan error, 1)} }
 	service.worker.Add(1)
 	go service.run()
 	return service, nil
@@ -172,9 +174,13 @@ func (l *Service) Log(text string, actors ...uint32) error {
 	}
 	defer l.active.Done()
 
-	reply := make(chan error, 1)
-	l.commands <- command{log: &logCmd{day: day, entry: entry, reply: reply}}
-	return <-reply
+	cmd := l.logs.Get().(*logCmd)
+	cmd.day, cmd.entry = day, entry
+	l.commands <- command{log: cmd}
+	err = <-cmd.reply
+	cmd.entry = nil
+	l.logs.Put(cmd)
+	return err
 }
 
 // Sync makes every previously accepted event durable.
