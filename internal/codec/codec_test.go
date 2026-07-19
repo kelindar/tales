@@ -4,6 +4,7 @@
 package codec
 
 import (
+	"encoding/binary"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -116,6 +117,36 @@ func TestEdgeCases(t *testing.T) {
 		assert.Equal(t, 0, count)
 	})
 
+	t.Run("TextInvalidBounds", func(t *testing.T) {
+		badSize := make([]byte, 10)
+		binary.LittleEndian.PutUint16(badSize[4:6], 100) // size > len
+		binary.LittleEndian.PutUint16(badSize[6:8], 8)
+		assert.Empty(t, LogEntry(badSize).Text())
+
+		emptyText := make([]byte, 16)
+		binary.LittleEndian.PutUint16(emptyText[4:6], 16)
+		binary.LittleEndian.PutUint16(emptyText[6:8], 16) // midpoint == size
+		assert.Empty(t, LogEntry(emptyText).Text())
+	})
+
+	t.Run("ActorsInvalidBounds", func(t *testing.T) {
+		badCutoff := make([]byte, 12)
+		binary.LittleEndian.PutUint16(badCutoff[4:6], 12)
+		binary.LittleEndian.PutUint16(badCutoff[6:8], 100) // cutoff > len
+		count := 0
+		for range LogEntry(badCutoff).Actors() {
+			count++
+		}
+		assert.Equal(t, 0, count)
+
+		misaligned := make([]byte, 13)
+		binary.LittleEndian.PutUint16(misaligned[4:6], 13)
+		binary.LittleEndian.PutUint16(misaligned[6:8], 9) // (9-8)%4 != 0
+		for range LogEntry(misaligned).Actors() {
+			count++
+		}
+		assert.Equal(t, 0, count)
+	})
 }
 
 func TestCompression(t *testing.T) {

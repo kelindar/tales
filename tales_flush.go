@@ -21,11 +21,10 @@ func (l *Service) flushBuffer(ctx context.Context, buf *buffer.Buffer) error {
 	}
 
 	res, err := buf.Flush()
-	if err != nil {
+	switch {
+	case err != nil:
 		return fmt.Errorf("failed to flush buffer: %w", err)
-	}
-
-	if res.Data.UncompressedSize == 0 {
+	case res.Data.UncompressedSize == 0:
 		return nil
 	}
 

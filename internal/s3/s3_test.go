@@ -49,7 +49,7 @@ func TestS3ClientBasics(t *testing.T) {
 	assert.Equal(t, int64(len(data)), size)
 }
 
-func TestIsNoSuchKey(t *testing.T) {
+func TestNoSuchKey(t *testing.T) {
 	assert.True(t, IsNoSuchKey(fs.ErrNotExist))
 	assert.False(t, IsNoSuchKey(nil))
 }

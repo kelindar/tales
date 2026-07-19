@@ -88,27 +88,31 @@ func (b *Buffer) QueryActors(dayStart time.Time, from, to time.Time, actors []ui
 
 		t0 := asSequence(from.UTC(), dayStart)
 		t1 := asSequence(to.UTC(), dayStart) | counterMask
-
-		for buffer := b.data; len(buffer) > 0; {
-			entry := codec.LogEntry(buffer)
-			size := int(entry.Size())
-			if size == 0 || size > len(buffer) {
+		for data := b.data; len(data) > 0; {
+			entry, size, ok := nextEntry(data)
+			if !ok {
 				return
 			}
-
-			// Check if this entry contains ALL required actors
-			if id := entry.ID(); id >= t0 && id <= t1 {
-				entryActors := entry.Actors()
-				if containsAllActors(entryActors, actors) {
-					if !yield(entry[:size]) {
-						return
-					}
-				}
+			if matchActors(entry, t0, t1, actors) && !yield(entry[:size]) {
+				return
 			}
-
-			buffer = buffer[size:]
+			data = data[size:]
 		}
 	}
+}
+
+func nextEntry(data []byte) (codec.LogEntry, int, bool) {
+	entry := codec.LogEntry(data)
+	size := int(entry.Size())
+	if size == 0 || size > len(data) {
+		return nil, 0, false
+	}
+	return entry, size, true
+}
+
+func matchActors(entry codec.LogEntry, t0, t1 uint32, actors []uint32) bool {
+	id := entry.ID()
+	return id >= t0 && id <= t1 && containsAllActors(entry.Actors(), actors)
 }
 
 // containsAllActors checks if entryActors contains all required actors.

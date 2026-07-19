@@ -5,9 +5,12 @@ package tales
 
 import (
 	"context"
+	"fmt"
+	"log"
 	"testing"
 	"time"
 
+	"github.com/kelindar/roaring"
 	s3mock "github.com/kelindar/s3/mock"
 	"github.com/kelindar/tales/internal/codec"
 	"github.com/kelindar/tales/internal/s3"
@@ -74,12 +77,22 @@ func BenchmarkQuery(b *testing.B) {
 	b.ReportMetric(float64(count)/time.Now().Sub(start).Seconds(), "qps")
 }
 
-func TestIntegration(t *testing.T) {
+func TestQuery(t *testing.T) {
+	tests := map[string]func(*testing.T){
+		"integration":          testQueryIntegration,
+		"multi day":            testQueryMultiDay,
+		"downloads chunk once": testQueryDownloadsOnce,
+	}
+	for name, fn := range tests {
+		t.Run(name, fn)
+	}
+}
+
+func testQueryIntegration(t *testing.T) {
 	logger, err := newService()
 	require.NoError(t, err)
 	defer logger.Close()
 
-	// Log some messages
 	logger.Log("hello world 1", 1)
 	logger.Log("hello world 2", 2)
 	logger.flush()
@@ -90,10 +103,9 @@ func TestIntegration(t *testing.T) {
 	from := time.Now().Add(-1 * time.Hour)
 	to := time.Now().Add(1 * time.Hour)
 
-	// Query for actor 1
 	var results1 []string
 	for timestamp, msg := range logger.Query(from, to, 1) {
-		_ = timestamp // ignore timestamp for this test
+		_ = timestamp
 		results1 = append(results1, msg)
 	}
 
@@ -103,7 +115,6 @@ func TestIntegration(t *testing.T) {
 		"hello world 4",
 	}, results1)
 
-	// Query for actor 2
 	var results2 []string
 	for _, msg := range logger.Query(from, to, 2) {
 		results2 = append(results2, msg)
@@ -113,7 +124,6 @@ func TestIntegration(t *testing.T) {
 		"hello world 4",
 	}, results2)
 
-	// Query for actor 3
 	var results3 []string
 	for _, msg := range logger.Query(from, to, 3) {
 		results3 = append(results3, msg)
@@ -122,45 +132,36 @@ func TestIntegration(t *testing.T) {
 		"hello world 3",
 	}, results3)
 
-	// Query for actor 4 (no logs)
 	var results4 []string
 	for _, msg := range logger.Query(from, to, 4) {
 		results4 = append(results4, msg)
 	}
 	assert.Empty(t, results4)
 
-	// Query for multiple actors (intersection)
 	var resultsMultiple []string
 	for _, msg := range logger.Query(from, to, 1, 2) {
 		resultsMultiple = append(resultsMultiple, msg)
 	}
 	assert.Equal(t, []string{
-		"hello world 4", // Only entry that has both actors 1 and 2
+		"hello world 4",
 	}, resultsMultiple)
 }
 
-func TestMultiDayQuery(t *testing.T) {
+func testQueryMultiDay(t *testing.T) {
 	logger, err := newService()
 	require.NoError(t, err)
 	defer logger.Close()
 
-	// Log some messages now (this will be "yesterday" from the perspective of our future query)
 	logger.Log("message from day 1", 1)
 	logger.Log("message from day 1 actor 2", 2)
 	logger.flush()
 	logger.Log("another message from day 1", 1, 3)
 	logger.flush()
 
-	// Simulate querying from the future - set up a range that spans multiple days
-	// We pretend we're querying 2 days from now, looking back 3 days and forward 1 day
 	futureNow := time.Now().Add(2 * 24 * time.Hour)
-	from := futureNow.Add(-3 * 24 * time.Hour) // 3 days before our "future now"
-	to := futureNow.Add(1 * 24 * time.Hour)    // 1 day after our "future now"
+	from := futureNow.Add(-3 * 24 * time.Hour)
+	to := futureNow.Add(1 * 24 * time.Hour)
 
-	// This query spans 4 days total, and our logged data should be found
-	// within this range since it was logged "2 days ago" from the future perspective
-
-	// Query for actor 1 across multiple days
 	var results1 []string
 	for _, msg := range logger.Query(from, to, 1) {
 		results1 = append(results1, msg)
@@ -171,16 +172,14 @@ func TestMultiDayQuery(t *testing.T) {
 		"another message from day 1",
 	}, results1)
 
-	// Query for multiple actors across multiple days
 	var resultsMultiple []string
 	for _, msg := range logger.Query(from, to, 1, 3) {
 		resultsMultiple = append(resultsMultiple, msg)
 	}
 	assert.Equal(t, []string{
-		"another message from day 1", // Only entry that has both actors 1 and 3
+		"another message from day 1",
 	}, resultsMultiple)
 
-	// Query for a time range that doesn't include our data (future range)
 	futureFrom := time.Now().Add(5 * 24 * time.Hour)
 	futureTo := time.Now().Add(7 * 24 * time.Hour)
 	var futureResults []string
@@ -190,36 +189,142 @@ func TestMultiDayQuery(t *testing.T) {
 	assert.Empty(t, futureResults, "Should not find any results in future time range")
 }
 
-func TestBuildKeys(t *testing.T) {
-	// Test metadata key
-	metadataKey := keyOfMetadata("2023-01-02")
-	assert.Equal(t, "2023-01-02/metadata.json", metadataKey)
+func testQueryDownloadsOnce(t *testing.T) {
+	logger, err := newService()
+	require.NoError(t, err)
+	defer logger.Close()
 
-	// Test chunk key
-	chunk := uint64(5)
-	assert.Equal(t, "2023-01-02/5.log", keyOfChunk("2023-01-02", chunk))
+	require.NoError(t, logger.Log("hello world", 1))
+	logger.flush()
+
+	client := &countingClient{Client: logger.s3Client}
+	logger.s3Client = client
+	for range logger.Query(time.Now().Add(-time.Hour), time.Now().Add(time.Hour), 1) {
+	}
+	assert.Equal(t, 1, client.ranges)
 }
 
-func TestCloseFlushes(t *testing.T) {
+func TestKeys(t *testing.T) {
+	assert.Equal(t, "2023-01-02/metadata.json", keyOfMetadata("2023-01-02"))
+	assert.Equal(t, "2023-01-02/5.log", keyOfChunk("2023-01-02", 5))
+}
+
+func TestGuards(t *testing.T) {
 	logger, err := newService()
 	require.NoError(t, err)
 
-	// Log an event but do not flush manually
+	from := time.Now().Add(-time.Hour)
+	to := time.Now().Add(time.Hour)
+
+	for range logger.Query(from, to) {
+		t.Fatal("expected no results without actors")
+	}
+
+	require.NoError(t, logger.Close())
+	for range logger.Query(from, to, 1) {
+		t.Fatal("expected no results after close")
+	}
+}
+
+func TestBufferOverflow(t *testing.T) {
+	mockS3 := s3mock.New("test-bucket", "us-east-1")
+	logger, err := New(
+		"test-bucket",
+		"us-east-1",
+		WithInterval(time.Minute),
+		WithBuffer(1),
+		WithClient(func(config s3.Config) (s3.Client, error) {
+			return s3.NewMockClient(mockS3, config)
+		}),
+	)
+	require.NoError(t, err)
+	defer logger.Close()
+
+	require.NoError(t, logger.Log("one", 1))
+	require.NoError(t, logger.Log("two", 1)) // forces flush when buffer is full
+
+	from := time.Now().Add(-time.Hour)
+	to := time.Now().Add(time.Hour)
+	var texts []string
+	for _, text := range logger.Query(from, to, 1) {
+		texts = append(texts, text)
+	}
+	assert.Contains(t, texts, "two")
+}
+
+func TestQueryHelpers(t *testing.T) {
+	t.Run("chunkActorIndexes empty data", func(t *testing.T) {
+		chunk := codec.NewChunkEntry(0, 0, 0, 0, 0, nil)
+		_, _, ok := chunkActorIndexes(chunk, []uint32{1}, 0, 100)
+		assert.False(t, ok)
+	})
+
+	t.Run("intersectIndexes out of bounds", func(t *testing.T) {
+		indexes := []codec.IndexEntry{codec.NewIndexEntry(0, 0, 100)}
+		assert.Nil(t, intersectIndexes([]byte{1, 2, 3}, indexes, 0))
+	})
+
+	t.Run("rangeChunks empty", func(t *testing.T) {
+		logger, err := newService()
+		require.NoError(t, err)
+		defer logger.Close()
+
+		sids := roaring.New()
+		sids.Set(1)
+		seq, err := logger.rangeChunks(nil, sids)
+		require.NoError(t, err)
+		count := 0
+		for range seq {
+			count++
+		}
+		assert.Equal(t, 0, count)
+	})
+
+	t.Run("scanForSID stop and invalid", func(t *testing.T) {
+		entry, err := codec.NewLogEntry(1, "hi", []uint32{1})
+		require.NoError(t, err)
+		buf := []byte(entry)
+
+		assert.False(t, scanForSID(&buf, 1, func(codec.LogEntry) bool { return false }))
+
+		bad := []byte{1, 0, 0, 0, 0, 0} // size 0
+		assert.False(t, scanForSID(&bad, 1, func(codec.LogEntry) bool { return true }))
+	})
+
+	t.Run("queryChunk stop early", func(t *testing.T) {
+		logger, err := newService()
+		require.NoError(t, err)
+		defer logger.Close()
+
+		require.NoError(t, logger.Log("a", 1))
+		require.NoError(t, logger.Log("b", 1))
+		logger.flush()
+
+		count := 0
+		for range logger.Query(time.Now().Add(-time.Hour), time.Now().Add(time.Hour), 1) {
+			count++
+			break
+		}
+		assert.Equal(t, 1, count)
+	})
+}
+
+func TestClose(t *testing.T) {
+	logger, err := newService()
+	require.NoError(t, err)
+
 	logger.Log("pending event", 1)
 
-	// Close should flush the buffered event
 	err = logger.Close()
 	require.NoError(t, err)
 
 	ctx := context.Background()
 	date := seq.FormatDate(time.Now())
 
-	// Metadata should exist
 	exists, err := logger.s3Client.ObjectExists(ctx, keyOfMetadata(date))
 	require.NoError(t, err)
 	assert.True(t, exists)
 
-	// Metadata should describe at least one chunk and the chunk file must exist
 	buf, err := logger.s3Client.Download(ctx, keyOfMetadata(date))
 	require.NoError(t, err)
 	meta, err := codec.DecodeMetadata(buf)
@@ -232,8 +337,65 @@ func TestCloseFlushes(t *testing.T) {
 	}
 }
 
+// Example demonstrates basic usage of the tales library
+func Example() {
+	mockServer := s3mock.New("example-bucket", "us-east-1")
+	defer mockServer.Close()
+
+	logger, err := New(
+		"example-bucket",
+		"us-east-1",
+		WithPrefix("events"),
+		WithInterval(5*time.Minute),
+		WithBuffer(1000),
+		WithClient(func(cfg s3.Config) (s3.Client, error) {
+			return s3.NewMockClient(mockServer, cfg)
+		}),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer logger.Close()
+
+	logger.Log("Player joined the game", 12345)
+	logger.Log("Player moved to position (100, 200)", 12345)
+	logger.Log("Player attacked monster", 12345, 67890)
+	logger.Log("Monster died", 67890)
+	logger.Log("Player gained 100 XP", 12345)
+
+	from := time.Now().Add(-1 * time.Hour)
+	to := time.Now().Add(1 * time.Hour)
+
+	fmt.Println("Events for player 12345:")
+	var count int
+	for _, text := range logger.Query(from, to, 12345) {
+		fmt.Printf("- %s\n", text)
+		count++
+	}
+	fmt.Printf("Total events: %d\n", count)
+
+	fmt.Println("\nEvents involving both player 12345 and monster 67890:")
+	count = 0
+	for _, text := range logger.Query(from, to, 12345, 67890) {
+		fmt.Printf("- %s\n", text)
+		count++
+	}
+	fmt.Printf("Total intersection events: %d\n", count)
+
+	// Output:
+	// Events for player 12345:
+	// - Player joined the game
+	// - Player moved to position (100, 200)
+	// - Player attacked monster
+	// - Player gained 100 XP
+	// Total events: 4
+	//
+	// Events involving both player 12345 and monster 67890:
+	// - Player attacked monster
+	// Total intersection events: 1
+}
+
 func newService() (*Service, error) {
-	// Create a mock S3 server
 	mockS3 := s3mock.New("test-bucket", "us-east-1")
 
 	return New(
@@ -246,4 +408,14 @@ func newService() (*Service, error) {
 			return s3.NewMockClient(mockS3, config)
 		}),
 	)
+}
+
+type countingClient struct {
+	s3.Client
+	ranges int
+}
+
+func (c *countingClient) DownloadRange(ctx context.Context, key string, start, end int64) ([]byte, error) {
+	c.ranges++
+	return c.Client.DownloadRange(ctx, key, start, end)
 }
