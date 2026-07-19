@@ -34,10 +34,10 @@ func NewMultiReader(sections ...[]byte) *MultiReader {
 
 // ReadAt implements io.ReaderAt interface.
 func (m *MultiReader) ReadAt(p []byte, off int64) (n int, err error) {
-	if off < 0 {
+	switch {
+	case off < 0:
 		return 0, io.ErrUnexpectedEOF
-	}
-	if off >= m.size {
+	case off >= m.size:
 		return 0, io.EOF
 	}
 

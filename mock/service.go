@@ -54,7 +54,6 @@ func (s *Service) Query(from, to time.Time, actors ...uint32) iter.Seq2[time.Tim
 
 		s.mu.RLock()
 		defer s.mu.RUnlock()
-
 		if s.size == 0 {
 			return
 		}
@@ -69,13 +68,13 @@ func (s *Service) Query(from, to time.Time, actors ...uint32) iter.Seq2[time.Tim
 			e := s.buf[idx]
 			idx = (idx + 1) % s.capacity
 
-			if e.ts.Before(from) || e.ts.After(to) {
+			switch {
+			case e.ts.Before(from), e.ts.After(to):
 				continue
-			}
-			if containsAll(e.actors, actors) {
-				if !yield(e.ts, e.text) {
-					return
-				}
+			case !containsAll(e.actors, actors):
+				continue
+			case !yield(e.ts, e.text):
+				return
 			}
 		}
 	}

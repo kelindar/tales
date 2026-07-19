@@ -62,25 +62,17 @@ func New(bucket, region string, opts ...Option) (*Service, error) {
 		opt(&cfg)
 	}
 
-	// Set defaults and validate configuration
 	cfg.setDefaults()
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
 
-	// Create codec for compression/decompression
 	codecInstance, err := codec.NewCodec()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create codec: %w", err)
 	}
 
-	// Create S3 client
-	var s3Client s3.Client
-	if cfg.NewClient != nil {
-		s3Client, err = cfg.NewClient(cfg.S3)
-	} else {
-		s3Client, err = s3.NewClient(cfg.S3)
-	}
+	s3Client, err := newS3Client(cfg)
 	if err != nil {
 		codecInstance.Close()
 		return nil, err
@@ -96,11 +88,16 @@ func New(bucket, region string, opts ...Option) (*Service, error) {
 		cancel:   cancel,
 	}
 
-	// Start the background goroutine
 	logger.wg.Add(1)
 	go logger.run(ctx)
-
 	return logger, nil
+}
+
+func newS3Client(cfg config) (s3.Client, error) {
+	if cfg.NewClient != nil {
+		return cfg.NewClient(cfg.S3)
+	}
+	return s3.NewClient(cfg.S3)
 }
 
 // Log adds a log entry with the given text and actors.
@@ -127,12 +124,10 @@ func (l *Service) Log(text string, actors ...uint32) error {
 // Only entries that contain ALL specified actors will be returned.
 func (l *Service) Query(from, to time.Time, actors ...uint32) iter.Seq2[time.Time, string] {
 	return func(yield func(time.Time, string) bool) {
-		if atomic.LoadInt32(&l.closed) != 0 {
+		switch {
+		case atomic.LoadInt32(&l.closed) != 0:
 			return
-		}
-
-		// Require at least one actor
-		if len(actors) == 0 {
+		case len(actors) == 0:
 			return
 		}
 
@@ -169,7 +164,6 @@ func (l *Service) run(ctx context.Context) {
 	ticker := time.NewTicker(l.config.ChunkInterval)
 	defer ticker.Stop()
 
-	// Initialize sequence generator for the current day
 	seqGen := seq.NewSequence(time.Now().UTC())
 	for {
 		select {
@@ -178,44 +172,42 @@ func (l *Service) run(ctx context.Context) {
 				l.flushBuffer(ctx, buf) // Final flush on close
 				return
 			}
-
-			if c := cmd.log; c != nil {
-				now := time.Now().UTC()
-
-				// Check if we need to flush for a new day
-				if seq.DayOf(now) != seqGen.Day() {
-					l.flushBuffer(ctx, buf)
-				}
-
-				sequenceID := seqGen.Next(now)
-				binary.LittleEndian.PutUint32((*c)[:4], sequenceID)
-				entry := codec.LogEntry(*c)
-				if !buf.Add(entry, now) {
-					l.flushBuffer(ctx, buf)
-					buf.Add(entry, now) // Must succeed
-				}
-				continue
-			}
-
-			if c := cmd.query; c != nil {
-				results := buf.QueryActors(seqGen.Day(), c.from, c.to, c.actors)
-				c.ret <- results
-				continue
-			}
-
-			if c := cmd.flush; c != nil {
-				l.flushBuffer(ctx, buf)
-				if c.done != nil {
-					close(c.done)
-				}
-				continue
-			}
-
+			l.handleCommand(ctx, buf, seqGen, cmd)
 		case <-ticker.C:
 			l.flushBuffer(ctx, buf)
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+func (l *Service) handleCommand(ctx context.Context, buf *buffer.Buffer, seqGen *seq.Sequence, cmd command) {
+	switch {
+	case cmd.log != nil:
+		l.handleLog(ctx, buf, seqGen, cmd.log)
+	case cmd.query != nil:
+		c := cmd.query
+		c.ret <- buf.QueryActors(seqGen.Day(), c.from, c.to, c.actors)
+	case cmd.flush != nil:
+		l.flushBuffer(ctx, buf)
+		if cmd.flush.done != nil {
+			close(cmd.flush.done)
+		}
+	}
+}
+
+func (l *Service) handleLog(ctx context.Context, buf *buffer.Buffer, seqGen *seq.Sequence, c *logCmd) {
+	now := time.Now().UTC()
+	if seq.DayOf(now) != seqGen.Day() {
+		l.flushBuffer(ctx, buf)
+	}
+
+	sequenceID := seqGen.Next(now)
+	binary.LittleEndian.PutUint32((*c)[:4], sequenceID)
+	entry := codec.LogEntry(*c)
+	if !buf.Add(entry, now) {
+		l.flushBuffer(ctx, buf)
+		buf.Add(entry, now) // Must succeed
 	}
 }
 

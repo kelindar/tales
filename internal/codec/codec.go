@@ -66,19 +66,15 @@ func (e LogEntry) Text() string {
 
 	size := binary.LittleEndian.Uint16(e[4:6])
 	midpoint := binary.LittleEndian.Uint16(e[6:8])
-
-	// Validate bounds
-	if int(size) > len(e) || int(midpoint) > len(e) || midpoint > size {
+	switch {
+	case int(size) > len(e) || int(midpoint) > len(e) || midpoint > size:
+		return ""
+	case midpoint >= size:
 		return ""
 	}
 
 	textStart := int(midpoint)
 	textEnd := int(size)
-
-	if textStart >= textEnd {
-		return ""
-	}
-
 	return unsafe.String(unsafe.SliceData(e[textStart:textEnd]), textEnd-textStart)
 }
 
@@ -90,19 +86,15 @@ func (e LogEntry) Actors() iter.Seq[uint32] {
 			return
 		}
 
-		// Validate bounds
 		cutoff := binary.LittleEndian.Uint16(e[6:8])
-		if int(cutoff) > len(e) || cutoff < 8 {
-			return
-		}
-
-		// Must be aligned to 4-byte boundaries
 		until := int(cutoff)
-		if (until-from)%4 != 0 {
+		switch {
+		case int(cutoff) > len(e) || cutoff < 8:
+			return
+		case (until-from)%4 != 0:
 			return
 		}
 
-		// Yield actor IDs (4 bytes each)
 		for pos := from; pos < until; pos += 4 {
 			if !yield(binary.LittleEndian.Uint32(e[pos : pos+4])) {
 				return

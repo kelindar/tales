@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestNewBuffer(t *testing.T) {
+func TestNew(t *testing.T) {
 	c, _ := codec.NewCodec()
 	buf := New(100, c)
 
@@ -24,7 +24,7 @@ func TestNewBuffer(t *testing.T) {
 	assert.Equal(t, 0, buf.length)
 }
 
-func TestBuffer_Add(t *testing.T) {
+func TestAdd(t *testing.T) {
 	c, _ := codec.NewCodec()
 	buf := New(2, c)
 	now := time.Now()
@@ -41,7 +41,7 @@ func TestBuffer_Add(t *testing.T) {
 	assert.Equal(t, 2, buf.length)
 }
 
-func TestBuffer_Flush(t *testing.T) {
+func TestFlush(t *testing.T) {
 	c, _ := codec.NewCodec()
 	buf := New(10, c)
 	now := time.Now()
@@ -52,16 +52,13 @@ func TestBuffer_Flush(t *testing.T) {
 	flushResult, err := buf.Flush()
 	assert.NoError(t, err)
 
-	// Check data
 	assert.True(t, flushResult.Data.UncompressedSize > 0)
 	assert.True(t, flushResult.Data.CompressedSize > 0)
 	assert.NotEmpty(t, flushResult.Data.CompressedData)
 
-	// Check time bounds
 	assert.Equal(t, uint32(now.Unix()), flushResult.Time[0])
 	assert.Equal(t, uint32(now.Unix()), flushResult.Time[1])
 
-	// Check bitmaps
 	assert.Len(t, flushResult.Index, 2)
 	for _, index := range flushResult.Index {
 		assert.Contains(t, []uint32{10, 20}, index.ActorID)
@@ -70,12 +67,22 @@ func TestBuffer_Flush(t *testing.T) {
 		assert.NotEmpty(t, index.CompressedData)
 	}
 
-	// Check if buffer is reset
 	assert.Equal(t, 0, buf.length)
 	assert.Empty(t, buf.data)
 }
 
-func TestBuffer_Query(t *testing.T) {
+func TestQuery(t *testing.T) {
+	tests := map[string]func(*testing.T){
+		"by actor":     testQueryByActor,
+		"inclusive to": testQueryInclusiveTo,
+		"all actors":   testQueryActors,
+	}
+	for name, fn := range tests {
+		t.Run(name, fn)
+	}
+}
+
+func testQueryByActor(t *testing.T) {
 	c, _ := codec.NewCodec()
 	buf := New(10, c)
 	dayStart := time.Now().UTC().Truncate(24 * time.Hour)
@@ -85,7 +92,6 @@ func TestBuffer_Query(t *testing.T) {
 	buf.Add(entry1, dayStart)
 	buf.Add(entry2, dayStart.Add(time.Minute))
 
-	// Query for actor 10
 	results := buf.Query(10, dayStart, dayStart, dayStart.Add(time.Hour))
 	count := 0
 	for range results {
@@ -93,7 +99,6 @@ func TestBuffer_Query(t *testing.T) {
 	}
 	assert.Equal(t, 2, count)
 
-	// Query for actor 20
 	results = buf.Query(20, dayStart, dayStart, dayStart.Add(time.Hour))
 	entries := []codec.LogEntry{}
 	for entry := range results {
@@ -102,7 +107,6 @@ func TestBuffer_Query(t *testing.T) {
 	assert.Len(t, entries, 1)
 	assert.Equal(t, entry1.ID(), entries[0].ID())
 
-	// Query for actor 30
 	results = buf.Query(30, dayStart, dayStart, dayStart.Add(time.Hour))
 	entries = entries[:0]
 	for entry := range results {
@@ -111,7 +115,6 @@ func TestBuffer_Query(t *testing.T) {
 	assert.Len(t, entries, 1)
 	assert.Equal(t, entry2.ID(), entries[0].ID())
 
-	// Query for non-existent actor
 	results = buf.Query(99, dayStart, dayStart, dayStart.Add(time.Hour))
 	count = 0
 	for range results {
@@ -120,7 +123,7 @@ func TestBuffer_Query(t *testing.T) {
 	assert.Equal(t, 0, count)
 }
 
-func TestBuffer_QueryInclusiveTo(t *testing.T) {
+func testQueryInclusiveTo(t *testing.T) {
 	c, _ := codec.NewCodec()
 	buf := New(10, c)
 	dayStart := time.Now().UTC().Truncate(24 * time.Hour)
@@ -139,61 +142,55 @@ func TestBuffer_QueryInclusiveTo(t *testing.T) {
 	assert.Equal(t, 1, count)
 }
 
-func TestBuffer_QueryActors(t *testing.T) {
+func testQueryActors(t *testing.T) {
 	c, _ := codec.NewCodec()
 	buf := New(10, c)
 	dayStart := time.Now().UTC().Truncate(24 * time.Hour)
 
-	// Create entries with different actor combinations
-	entry1, _ := codec.NewLogEntry(1, "test1", []uint32{10, 20})     // actors 10, 20
-	entry2, _ := codec.NewLogEntry(2, "test2", []uint32{10, 30})     // actors 10, 30
-	entry3, _ := codec.NewLogEntry(3, "test3", []uint32{10, 20, 30}) // actors 10, 20, 30
-	entry4, _ := codec.NewLogEntry(4, "test4", []uint32{40})         // actor 40
+	entry1, _ := codec.NewLogEntry(1, "test1", []uint32{10, 20})
+	entry2, _ := codec.NewLogEntry(2, "test2", []uint32{10, 30})
+	entry3, _ := codec.NewLogEntry(3, "test3", []uint32{10, 20, 30})
+	entry4, _ := codec.NewLogEntry(4, "test4", []uint32{40})
 	buf.Add(entry1, dayStart)
 	buf.Add(entry2, dayStart.Add(time.Minute))
 	buf.Add(entry3, dayStart.Add(2*time.Minute))
 	buf.Add(entry4, dayStart.Add(3*time.Minute))
 
-	// Query for single actor (should work like old Query)
 	results := buf.QueryActors(dayStart, dayStart, dayStart.Add(time.Hour), []uint32{10})
 	count := 0
 	for range results {
 		count++
 	}
-	assert.Equal(t, 3, count) // entries 1, 2, 3 have actor 10
+	assert.Equal(t, 3, count)
 
-	// Query for intersection of two actors
 	results = buf.QueryActors(dayStart, dayStart, dayStart.Add(time.Hour), []uint32{10, 20})
 	entries := []codec.LogEntry{}
 	for entry := range results {
 		entries = append(entries, entry)
 	}
-	assert.Len(t, entries, 2) // entries 1 and 3 have both actors 10 and 20
+	assert.Len(t, entries, 2)
 	assert.Equal(t, entry1.ID(), entries[0].ID())
 	assert.Equal(t, entry3.ID(), entries[1].ID())
 
-	// Query for intersection of three actors
 	results = buf.QueryActors(dayStart, dayStart, dayStart.Add(time.Hour), []uint32{10, 20, 30})
 	entries = entries[:0]
 	for entry := range results {
 		entries = append(entries, entry)
 	}
-	assert.Len(t, entries, 1) // only entry 3 has all three actors
+	assert.Len(t, entries, 1)
 	assert.Equal(t, entry3.ID(), entries[0].ID())
 
-	// Query for non-intersecting actors
 	results = buf.QueryActors(dayStart, dayStart, dayStart.Add(time.Hour), []uint32{20, 40})
 	count = 0
 	for range results {
 		count++
 	}
-	assert.Equal(t, 0, count) // no entry has both actors 20 and 40
+	assert.Equal(t, 0, count)
 
-	// Query with empty actors list
 	results = buf.QueryActors(dayStart, dayStart, dayStart.Add(time.Hour), []uint32{})
 	count = 0
 	for range results {
 		count++
 	}
-	assert.Equal(t, 0, count) // empty actors should return no results
+	assert.Equal(t, 0, count)
 }
