@@ -7,105 +7,126 @@
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
 </p>
 
-## Multi-Actor Event Logging in S3
+## Event logs in S3
 
-Tales provides a **multi-actor, S3-backed log store** with actor-centric queries. It keeps recent events in memory and persists them to S3 in compressed chunks.
+Tales is a Go package for recording events in an S3 bucket and reading them back by actor. An actor is a numeric ID for something involved in an event, such as a user, account, device, conversation, or game object. One event can belong to several actors.
 
-- **Fast Writes:** Non-blocking logging with sequential encoding.
-- **Actor Queries:** Efficient per-actor lookups using bitmaps.
-- **S3 Only:** Zero local storage with compressed periodic files.
-- **Thread-Safe:** Safe for concurrent logging from multiple goroutines.
+Events are append-only: Tales writes new events but does not update existing ones. It buffers and compresses events before saving them to S3. Multiple application instances can write under the same S3 prefix because each instance writes to its own daily files.
 
-**Use When:**
-- ✅ Storing chat or gameplay events for many users.
-- ✅ Needing history queries scoped to a single actor or intersection of actors.
-- ✅ Wanting predictable memory usage and S3 as the only storage.
+The main operations are:
 
-**Not For:**
-- ❌ Archiving long-term logs with complex structure.
-- ❌ Applications that require random updates to existing entries.
+- `Log` accepts an event into the current process's memory.
+- `Sync` waits until events accepted before it have been saved to S3.
+- `Query` reads events within a time range that contain all requested actors.
+- `Compact` prepares older days so queries need fewer S3 requests.
 
+### Use when
 
-## Quick Start
+- Events naturally belong to one or more numeric actors.
+- You want S3 to be the persistent store and do not need a database alongside it.
+- Your application mostly appends events and reads actor history.
+- Several application instances need to write to the same bucket and prefix.
+
+### Not for
+
+- Updating or deleting individual events after they are written.
+- Full-text search, arbitrary JSON filtering, joins, or database transactions.
+- Sharing one writer ID between two live processes.
+- Treating a successful `Log` call as proof that S3 already has the event; call `Sync` when that guarantee is needed.
+
+Each running service owns one writer ID. Tales creates a process-specific ID by default. Use `WithWriterID` to derive a stable ID from a deployment name, and ensure only one live process uses that name at a time.
+
+## Quick start
 
 ```go
+package main
+
 import (
-    "log"
-    "time"
-    "github.com/kelindar/tales"
+	"context"
+	"log"
+	"time"
+
+	"github.com/kelindar/tales"
 )
 
-logger, err := tales.New("my-bucket", "us-east-1",
-    tales.WithPrefix("events"),
-    tales.WithChunkInterval(5*time.Minute),
-)
-if err != nil {
-    log.Fatal(err)
-}
-defer logger.Close()
+func main() {
+	ctx := context.Background()
+	logger, err := tales.New("my-bucket", "us-east-1",
+		tales.WithPrefix("events"),
+		tales.WithWriterID("game-server-1"),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-// Log a few events (returns error)
-logger.Log("Player joined", 1)
-logger.Log("Player moved", 1)
+	if err := logger.Log(`{"kind":"joined"}`, 12345); err != nil {
+		log.Fatal(err)
+	}
+	if err := logger.Log(`{"kind":"attacked"}`, 12345, 67890); err != nil {
+		log.Fatal(err)
+	}
+	if err := logger.Sync(ctx); err != nil {
+		log.Fatal(err)
+	}
 
-from := time.Now().Add(-10 * time.Minute)
-to := time.Now()
+	from := time.Now().Add(-time.Hour)
+	to := time.Now()
+	for event, err := range logger.Query(ctx, from, to, 12345, 67890) {
+		if err != nil {
+			log.Fatal(err)
+		}
+		log.Printf("%s %s", event.Time(), event.Text())
+	}
 
-// Query for a single actor (returns an iterator)
-for _, text := range logger.Query(from, to, 1) {
-    println(text)
-}
-
-// Query for entries that contain ALL specified actors (intersection)
-for _, text := range logger.Query(from, to, 1, 2) {
-    println("Event involving both actors:", text)
+	if err := logger.Close(); err != nil {
+		log.Fatal(err)
+	}
 }
 ```
 
-**Note:** `logger.Query` returns an iterator (not a slice). You can use it in a `for _, v := range ...` loop in Go 1.21+.
+The query above asks for events containing both actor `12345` and actor `67890`. Actor arguments are combined with AND, so an event must contain every requested actor. The start and end times are included in the query range.
 
-### Example Output
-```
-Player joined
-Player moved
-```
+When events have the same timestamp, Tales orders them by writer ID, chunk sequence, and their position within the chunk. This makes repeated queries return events in the same order.
 
-## More Complete Example
+An `Event` provides its timestamp, text, JSON bytes, actors, and payload bytes. These values normally refer directly to the downloaded data to avoid a copy. Treat byte and JSON views as read-only. If an event must be kept or modified independently, call `Event.Clone`.
+
+## Historical compaction
+
+Compaction is optional maintenance for historical data. It combines the actor indexes for one UTC day and, where supported, asks S3 to combine large payload ranges without downloading them through the application.
+
+Call `Compact` from an external scheduled job, with only one compactor running for a prefix. Today, yesterday, and future UTC days are rejected; the earliest eligible day is two days ago.
+
 ```go
-// Log some game events
-logger.Log("Player joined the game", 12345)
-logger.Log("Player moved to position (100, 200)", 12345)
-logger.Log("Player attacked monster", 12345, 67890) // Player and monster
-logger.Log("Monster died", 67890)
-logger.Log("Player gained 100 XP", 12345)
-
-from := time.Now().Add(-1 * time.Hour)
-to := time.Now().Add(1 * time.Hour)
-
-// Query events for a specific player
-for _, text := range logger.Query(from, to, 12345) {
-    println(text)
-}
-
-// Query events involving both player and monster
-for _, text := range logger.Query(from, to, 12345, 67890) {
-    println(text)
+day := time.Now().UTC().AddDate(0, 0, -2)
+if err := logger.Compact(context.Background(), day); err != nil {
+	log.Fatal(err)
 }
 ```
 
-### Output
+Compaction is safe to retry. Its metadata is written last, so queries continue using the original writer files if an earlier step fails. Copied source files remain for 24 hours and are removed by a later run. Smaller source files that are still referenced are kept.
+
+## Storage layout
+
+Tales creates these keys below the configured prefix. Most users do not need to read these files directly.
+
+```text
+YYYY-MM-DD/writers/<writer>/manifest.json
+YYYY-MM-DD/writers/<writer>/<sequence>.log
+YYYY-MM-DD/compact/index.bin
+YYYY-MM-DD/compact/data.log
+YYYY-MM-DD/compact/metadata.json
 ```
-Player joined the game
-Player moved to position (100, 200)
-Player attacked monster
-Player gained 100 XP
-Player attacked monster
-```
+
+Chunk sequences are zero-based and formatted as 20 decimal digits in keys and JSON metadata.
+
+This release uses a new format and API with no legacy decoder or migration layer.
 
 ## Installation
+
 ```bash
 go get github.com/kelindar/tales
 ```
 
 ## License
+
 Tales is released under the [MIT License](https://opensource.org/licenses/MIT).

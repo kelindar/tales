@@ -7,7 +7,7 @@ toolchain go1.25.12
 require (
 	github.com/kelindar/bench v0.3.2
 	github.com/kelindar/roaring v0.0.6
-	github.com/kelindar/s3 v0.1.1
+	github.com/kelindar/s3 v0.2.2
 	github.com/klauspost/compress v1.19.0
 	github.com/stretchr/testify v1.11.1
 )

@@ -5,100 +5,120 @@ package codec
 
 import (
 	"encoding/binary"
+	"encoding/json"
+	"fmt"
 	"iter"
+	"math"
+	"slices"
 	"time"
 	"unsafe"
-
-	"github.com/kelindar/tales/internal/seq"
 )
 
-// LogEntry represents a single log entry as raw bytes
+const (
+	headerSize = 8
+	MaxMillis  = 86_399_999
+)
+
+// LogEntry is one validated on-disk event frame.
 type LogEntry []byte
 
-// NewLogEntry creates a new log entry from components
-func NewLogEntry(sequenceID uint32, text string, actors []uint32) (LogEntry, error) {
-	actlen := len(actors) * 4
-	strlen := len(text)
-	length := 4 + 2 + 2 + actlen + strlen // sequenceID + size + cutoff + actors + text
-	cutoff := 8 + actlen                  // offset where text starts (after sequenceID + size + midpoint + actors)
-
-	buf := make([]byte, 0, length)
-	buf = binary.LittleEndian.AppendUint32(buf, sequenceID)
-	buf = binary.LittleEndian.AppendUint16(buf, uint16(length))
-	buf = binary.LittleEndian.AppendUint16(buf, uint16(cutoff))
-
-	for _, actor := range actors {
-		buf = binary.LittleEndian.AppendUint32(buf, actor)
-	}
-
-	buf = append(buf, text...)
-	return LogEntry(buf), nil
-}
-
-// ID extracts the sequence ID from a log entry
-// Time reconstructs the timestamp from the day-start and sequence ID.
-func (e LogEntry) Time(dayStart time.Time) time.Time {
-	return seq.TimeOf(e.ID(), dayStart)
-}
-
-// ID extracts the sequence ID from a log entry
-// Size returns the total size of the log entry in bytes.
-func (e LogEntry) Size() uint32 {
-	if len(e) < 6 {
-		return 0
-	}
-	return uint32(binary.LittleEndian.Uint16(e[4:6]))
-}
-
-// ID extracts the sequence ID from a log entry
-func (e LogEntry) ID() uint32 {
-	if len(e) < 4 {
-		return 0
-	}
-	return binary.LittleEndian.Uint32(e[:4])
-}
-
-// Text extracts the text from a log entry
-func (e LogEntry) Text() string {
-	if len(e) < 8 { // 4 bytes sequence ID + 2 bytes size + 2 bytes midpoint
-		return ""
-	}
-
-	size := binary.LittleEndian.Uint16(e[4:6])
-	midpoint := binary.LittleEndian.Uint16(e[6:8])
+func NewLogEntry(millis uint32, text string, actors []uint32) (LogEntry, error) {
+	size := headerSize + len(actors)*4 + len(text)
 	switch {
-	case int(size) > len(e) || int(midpoint) > len(e) || midpoint > size:
-		return ""
-	case midpoint >= size:
-		return ""
+	case millis > MaxMillis:
+		return nil, fmt.Errorf("timestamp offset %d exceeds UTC day", millis)
+	case size > math.MaxUint16:
+		return nil, fmt.Errorf("event frame too large: %d bytes", size)
 	}
 
-	textStart := int(midpoint)
-	textEnd := int(size)
-	return unsafe.String(unsafe.SliceData(e[textStart:textEnd]), textEnd-textStart)
+	entry := make([]byte, 0, size)
+	entry = binary.LittleEndian.AppendUint32(entry, millis)
+	entry = binary.LittleEndian.AppendUint16(entry, uint16(size))
+	entry = binary.LittleEndian.AppendUint16(entry, uint16(headerSize+len(actors)*4))
+	for _, actor := range actors {
+		entry = binary.LittleEndian.AppendUint32(entry, actor)
+	}
+	return append(entry, text...), nil
 }
 
-// Actors extracts the actor IDs from a log entry as an iterator
+// ValidateEntry validates the first frame in data and returns its exact view.
+func ValidateEntry(data []byte) (LogEntry, int, error) {
+	if len(data) < headerSize {
+		return nil, 0, fmt.Errorf("truncated event header")
+	}
+	size := int(binary.LittleEndian.Uint16(data[4:6]))
+	actorsEnd := int(binary.LittleEndian.Uint16(data[6:8]))
+	switch {
+	case size < headerSize || size > len(data):
+		return nil, 0, fmt.Errorf("invalid event size %d", size)
+	case actorsEnd < headerSize || actorsEnd > size || (actorsEnd-headerSize)%4 != 0:
+		return nil, 0, fmt.Errorf("invalid actor boundary %d", actorsEnd)
+	case binary.LittleEndian.Uint32(data[:4]) > MaxMillis:
+		return nil, 0, fmt.Errorf("invalid millisecond offset")
+	}
+	return LogEntry(data[:size]), size, nil
+}
+
+// ValidateEntries validates an entire decompressed chunk once at its boundary.
+func ValidateEntries(data []byte, expected uint32) ([]LogEntry, error) {
+	entries := make([]LogEntry, 0, expected)
+	for len(data) > 0 {
+		entry, size, err := ValidateEntry(data)
+		if err != nil {
+			return nil, fmt.Errorf("event %d: %w", len(entries), err)
+		}
+		entries = append(entries, entry)
+		data = data[size:]
+	}
+	if uint64(len(entries)) != uint64(expected) {
+		return nil, fmt.Errorf("entry count mismatch: got %d, want %d", len(entries), expected)
+	}
+	return entries, nil
+}
+
+func (e LogEntry) Millis() uint32 { return binary.LittleEndian.Uint32(e[:4]) }
+
+func (e LogEntry) payload() []byte {
+	return e[binary.LittleEndian.Uint16(e[6:8]):binary.LittleEndian.Uint16(e[4:6])]
+}
+
 func (e LogEntry) Actors() iter.Seq[uint32] {
-	const from = 8
 	return func(yield func(uint32) bool) {
-		if len(e) < 8 { // 4 bytes sequence ID + 2 bytes size + 2 bytes midpoint
-			return
-		}
-
-		cutoff := binary.LittleEndian.Uint16(e[6:8])
-		until := int(cutoff)
-		switch {
-		case int(cutoff) > len(e) || cutoff < 8:
-			return
-		case (until-from)%4 != 0:
-			return
-		}
-
-		for pos := from; pos < until; pos += 4 {
-			if !yield(binary.LittleEndian.Uint32(e[pos : pos+4])) {
+		end := int(binary.LittleEndian.Uint16(e[6:8]))
+		for offset := headerSize; offset < end; offset += 4 {
+			if !yield(binary.LittleEndian.Uint32(e[offset : offset+4])) {
 				return
 			}
 		}
 	}
+}
+
+// Event is a zero-copy view over a validated event frame. Returned slices are
+// read-only by contract; Clone creates independent storage.
+type Event struct {
+	day  time.Time
+	data LogEntry
+}
+
+func NewEvent(day time.Time, entry LogEntry) Event {
+	return Event{day: day, data: entry}
+}
+
+func (e Event) Time() time.Time {
+	return e.day.Add(time.Duration(e.data.Millis()) * time.Millisecond)
+}
+
+func (e Event) Bytes() []byte { return e.data.payload() }
+
+func (e Event) Text() string {
+	payload := e.Bytes()
+	return unsafe.String(unsafe.SliceData(payload), len(payload))
+}
+
+func (e Event) JSON() json.RawMessage { return json.RawMessage(e.Bytes()) }
+
+func (e Event) Actors() iter.Seq[uint32] { return e.data.Actors() }
+
+func (e Event) Clone() Event {
+	return Event{day: e.day, data: slices.Clone(e.data)}
 }

@@ -4,6 +4,8 @@
 package s3
 
 import (
+	"strings"
+
 	s3lib "github.com/kelindar/s3"
 	"github.com/kelindar/s3/aws"
 	s3mock "github.com/kelindar/s3/mock"
@@ -24,5 +26,5 @@ func NewMockClient(server *s3mock.Server, cfg Config) (Client, error) {
 	key.BaseURI = server.URL()
 	bucket := s3lib.NewBucket(key, cfg.Bucket)
 	bucket.Lazy = true
-	return &S3Client{bucket: bucket, key: key, bucketName: cfg.Bucket, prefix: cfg.Prefix}, nil
+	return &S3Client{bucket: bucket, key: key, bucketName: cfg.Bucket, prefix: strings.Trim(cfg.Prefix, "/")}, nil
 }

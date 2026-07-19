@@ -1,6 +1,7 @@
 package mock
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -19,14 +20,16 @@ func TestServiceLogQuery(t *testing.T) {
 	to := now.Add(time.Minute)
 
 	var results []string
-	for _, text := range svc.Query(from, to, 1) {
-		results = append(results, text)
+	for event, err := range svc.Query(context.Background(), from, to, 1) {
+		assert.NoError(t, err)
+		results = append(results, event.Text())
 	}
 	assert.Equal(t, []string{"third"}, results)
 
 	results = results[:0]
-	for _, text := range svc.Query(from, to, 2) {
-		results = append(results, text)
+	for event, err := range svc.Query(context.Background(), from, to, 2) {
+		assert.NoError(t, err)
+		results = append(results, event.Text())
 	}
 	assert.Equal(t, []string{"second"}, results)
 }
@@ -42,8 +45,9 @@ func TestServiceQueryIntersection(t *testing.T) {
 	to := now.Add(time.Minute)
 
 	var res []string
-	for _, text := range svc.Query(from, to, 1, 2) {
-		res = append(res, text)
+	for event, err := range svc.Query(context.Background(), from, to, 1, 2) {
+		assert.NoError(t, err)
+		res = append(res, event.Text())
 	}
 	assert.Equal(t, []string{"b"}, res)
 }
@@ -54,10 +58,14 @@ func TestServiceCloseResets(t *testing.T) {
 
 	err := svc.Close()
 	assert.NoError(t, err)
-	assert.Equal(t, 0, svc.capacity)
+	assert.Equal(t, 2, svc.capacity)
 	assert.Nil(t, svc.buf)
 	assert.Zero(t, svc.size)
 	assert.Zero(t, svc.next)
+	assert.True(t, svc.closed)
+	assert.Error(t, svc.Log("late", 1))
+	assert.Error(t, svc.Sync(context.Background()))
+	assert.Error(t, svc.Close())
 }
 
 func TestServiceQueryFilters(t *testing.T) {
@@ -70,20 +78,21 @@ func TestServiceQueryFilters(t *testing.T) {
 	to := now.Add(time.Minute)
 
 	var texts []string
-	for _, text := range svc.Query(from, to, 1) {
-		texts = append(texts, text)
+	for event, err := range svc.Query(context.Background(), from, to, 1) {
+		assert.NoError(t, err)
+		texts = append(texts, event.Text())
 	}
 	assert.Equal(t, []string{"keep"}, texts)
 
 	// Outside the time window
-	for range svc.Query(now.Add(time.Hour), now.Add(2*time.Hour), 1) {
+	for range svc.Query(context.Background(), now.Add(time.Hour), now.Add(2*time.Hour), 1) {
 		t.Fatal("expected no results outside time range")
 	}
 
 	// Stop iteration early
 	count := 0
 	svc.Log("second", 1)
-	for range svc.Query(from, to, 1) {
+	for range svc.Query(context.Background(), from, to, 1) {
 		count++
 		break
 	}
