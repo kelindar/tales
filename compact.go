@@ -128,10 +128,10 @@ func (l *Service) composeCompactPayload(ctx context.Context, day string, sources
 		offset += parts[i].Size
 	}
 	object, err := l.s3Client.Stat(ctx, key)
-	if err != nil {
+	switch {
+	case err != nil:
 		return err
-	}
-	if object.ETag != etag || object.Size != offset {
+	case object.ETag != etag || object.Size != offset:
 		return fmt.Errorf("composed payload validation failed")
 	}
 	return nil
@@ -159,10 +159,10 @@ func (l *Service) uploadCompactIndex(ctx context.Context, day string, merged map
 		return codec.ObjectRange{}, nil, err
 	}
 	object, err := l.s3Client.Stat(ctx, key)
-	if err != nil {
+	switch {
+	case err != nil:
 		return codec.ObjectRange{}, nil, err
-	}
-	if object.ETag != etag || object.Size != int64(len(data)) {
+	case object.ETag != etag || object.Size != int64(len(data)):
 		return codec.ObjectRange{}, nil, fmt.Errorf("compacted index validation failed")
 	}
 	return codec.ObjectRange{Key: key, ETag: etag, Size: int64(len(data))}, ranges, nil
@@ -174,10 +174,10 @@ func (l *Service) validateDirectPayloads(ctx context.Context, sources []codec.Co
 			continue
 		}
 		object, err := l.s3Client.Stat(ctx, source.Source)
-		if err != nil {
+		switch {
+		case err != nil:
 			return err
-		}
-		if object.ETag != source.Payload.ETag || source.Payload.Offset+source.Payload.Size > object.Size {
+		case object.ETag != source.Payload.ETag || source.Payload.Offset+source.Payload.Size > object.Size:
 			return fmt.Errorf("direct payload validation failed")
 		}
 	}

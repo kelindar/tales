@@ -40,10 +40,10 @@ func encodeCursor(ref eventRef) (Cursor, error) {
 }
 
 func decodeCursor(cursor Cursor) (*cursorPosition, error) {
-	if cursor == Zero {
+	switch {
+	case cursor == Zero:
 		return nil, nil
-	}
-	if len(cursor) != 27 {
+	case len(cursor) != 27:
 		return nil, fmt.Errorf("invalid cursor length %d", len(cursor))
 	}
 	var data [20]byte

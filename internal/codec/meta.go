@@ -165,20 +165,14 @@ func validateCompactSources(sources []CompactSource) error {
 
 func validateCompactSource(sources []CompactSource, i int, base uint64) error {
 	source := sources[i]
-	if source.Base != base || !validWriterID(source.Writer) || source.Entries == 0 || source.Time[0] > source.Time[1] || source.Time[1] > MaxMillis || source.Payload.Key == "" || source.Payload.ETag == "" || source.Payload.Offset < 0 || source.Payload.Size <= 0 || source.Payload.Offset > math.MaxInt64-source.Payload.Size || source.Source == "" {
+	switch {
+	case source.Base != base || !validWriterID(source.Writer) || source.Entries == 0 || source.Time[0] > source.Time[1] || source.Time[1] > MaxMillis || source.Payload.Key == "" || source.Payload.ETag == "" || source.Payload.Offset < 0 || source.Payload.Size <= 0 || source.Payload.Offset > math.MaxInt64-source.Payload.Size || source.Source == "":
 		return fmt.Errorf("invalid compact source %d", i)
-	}
-	if i == 0 {
-		if source.Sequence != 0 {
-			return fmt.Errorf("compact sources are not ordered")
-		}
-	} else {
-		previous := sources[i-1]
-		if source.Writer < previous.Writer || source.Writer == previous.Writer && source.Sequence != previous.Sequence+1 || source.Writer > previous.Writer && source.Sequence != 0 {
-			return fmt.Errorf("compact sources are not ordered")
-		}
-	}
-	if !source.Copied && source.Payload.Key != source.Source {
+	case i == 0 && source.Sequence != 0:
+		return fmt.Errorf("compact sources are not ordered")
+	case i > 0 && (source.Writer < sources[i-1].Writer || source.Writer == sources[i-1].Writer && source.Sequence != sources[i-1].Sequence+1 || source.Writer > sources[i-1].Writer && source.Sequence != 0):
+		return fmt.Errorf("compact sources are not ordered")
+	case !source.Copied && source.Payload.Key != source.Source:
 		return fmt.Errorf("direct compact source %d has mismatched payload", i)
 	}
 	return nil

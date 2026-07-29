@@ -59,31 +59,16 @@ func (e invalidBitmapError) Unwrap() error { return e.err }
 // the other, ascending when from <= to and descending otherwise. The cursor is
 // exclusive; an empty next cursor ends iteration.
 func (l *Service) Page(ctx context.Context, from, to time.Time, cursor Cursor, limit int, actors ...uint32) ([]Event, Cursor, error) {
-	switch {
-	case ctx == nil:
-		return nil, Zero, fmt.Errorf("nil context")
-	case ctx.Err() != nil:
-		return nil, Zero, ctx.Err()
-	case len(actors) == 0:
-		return nil, Zero, fmt.Errorf("no actors specified")
-	case limit < 1:
-		return nil, Zero, fmt.Errorf("limit must be at least 1")
-	case limit > 1000:
-		return nil, Zero, fmt.Errorf("limit exceeds maximum of 1000")
+	if err := validatePage(ctx, limit, actors); err != nil {
+		return nil, Zero, err
 	}
-
 	position, err := decodeCursor(cursor)
 	if err != nil {
 		return nil, Zero, err
 	}
-	from, to = from.UTC(), to.UTC()
-	ascending := !from.After(to)
-	lower, upper := minTime(from, to), maxTime(from, to)
-	if position != nil {
-		at := time.UnixMilli(position.millis)
-		if at.Before(lower) || at.After(upper) {
-			return nil, Zero, fmt.Errorf("cursor timestamp outside query range")
-		}
+	window, err := newPageWindow(from.UTC(), to.UTC(), position)
+	if err != nil {
+		return nil, Zero, err
 	}
 	if err := l.begin(); err != nil {
 		return nil, Zero, err
@@ -94,59 +79,115 @@ func (l *Service) Page(ctx context.Context, from, to time.Time, cursor Cursor, l
 	if err != nil {
 		return nil, Zero, err
 	}
-	actors = uniqueActors(actors)
+	events, last, more, err := l.collectPage(ctx, snapshot, window, position, uniqueActors(actors), limit)
+	if err != nil {
+		return nil, Zero, err
+	}
+	if !more {
+		return events, Zero, nil
+	}
+	next, err := encodeCursor(last)
+	if err != nil {
+		return nil, Zero, err
+	}
+	return events, next, nil
+}
+
+func validatePage(ctx context.Context, limit int, actors []uint32) error {
+	switch {
+	case ctx == nil:
+		return fmt.Errorf("nil context")
+	case ctx.Err() != nil:
+		return ctx.Err()
+	case len(actors) == 0:
+		return fmt.Errorf("no actors specified")
+	case limit < 1:
+		return fmt.Errorf("limit must be at least 1")
+	case limit > 1000:
+		return fmt.Errorf("limit exceeds maximum of 1000")
+	}
+	return nil
+}
+
+type pageWindow struct {
+	ascending         bool
+	lower, upper      time.Time
+	firstDay, lastDay time.Time
+	step              int
+}
+
+func newPageWindow(from, to time.Time, position *cursorPosition) (pageWindow, error) {
+	ascending := !from.After(to)
+	lower, upper := minTime(from, to), maxTime(from, to)
 	if position != nil {
-		if ascending {
-			lower = time.UnixMilli(position.millis)
-		} else {
-			upper = time.UnixMilli(position.millis)
+		at := time.UnixMilli(position.millis)
+		if at.Before(lower) || at.After(upper) {
+			return pageWindow{}, fmt.Errorf("cursor timestamp outside query range")
+		}
+		switch {
+		case ascending:
+			lower = at
+		default:
+			upper = at
 		}
 	}
 	firstDay, lastDay, step := dayOf(lower), dayOf(upper), 1
 	if !ascending {
 		firstDay, lastDay, step = lastDay, firstDay, -1
 	}
+	return pageWindow{
+		ascending: ascending,
+		lower:     lower,
+		upper:     upper,
+		firstDay:  firstDay,
+		lastDay:   lastDay,
+		step:      step,
+	}, nil
+}
+
+func (l *Service) collectPage(ctx context.Context, snapshot querySnapshot, window pageWindow, position *cursorPosition, actors []uint32, limit int) ([]Event, eventRef, bool, error) {
 	events := make([]Event, 0, limit)
 	var last eventRef
-	more := false
-	for day := firstDay; ; day = day.AddDate(0, 0, step) {
+	for day := window.firstDay; ; day = day.AddDate(0, 0, window.step) {
 		if err := ctx.Err(); err != nil {
-			return nil, Zero, err
+			return nil, eventRef{}, false, err
 		}
-		dayFrom := maxTime(lower, day)
-		dayTo := minTime(upper, day.Add(24*time.Hour-time.Millisecond))
+		dayFrom := maxTime(window.lower, day)
+		dayTo := minTime(window.upper, day.Add(24*time.Hour-time.Millisecond))
 		found, err := l.queryDay(ctx, snapshot, day, dayFrom, dayTo, actors)
 		if err != nil {
-			return nil, Zero, err
+			return nil, eventRef{}, false, err
 		}
-		sortEventRefs(found, ascending)
-		for _, ref := range found {
-			if position != nil {
-				order := compareEventCursor(ref, *position)
-				if ascending && order <= 0 || !ascending && order >= 0 {
-					continue
-				}
-			}
-			if len(events) == limit {
-				more = true
-				break
-			}
-			events = append(events, ref.event)
-			last = ref
-		}
-		if more || day.Equal(lastDay) {
-			break
-		}
-	}
+		sortEventRefs(found, window.ascending)
 
-	var next Cursor
-	if more {
-		next, err = encodeCursor(last)
-		if err != nil {
-			return nil, Zero, err
+		var full bool
+		events, last, full = takePageEvents(events, last, found, position, window.ascending, limit)
+		if full || day.Equal(window.lastDay) {
+			return events, last, full, nil
 		}
 	}
-	return events, next, nil
+}
+
+func takePageEvents(events []Event, last eventRef, found []eventRef, position *cursorPosition, ascending bool, limit int) ([]Event, eventRef, bool) {
+	for _, ref := range found {
+		if skipBeforeCursor(ref, position, ascending) {
+			continue
+		}
+		if len(events) == limit {
+			return events, last, true
+		}
+		events = append(events, ref.event)
+		last = ref
+	}
+	return events, last, false
+}
+
+func skipBeforeCursor(ref eventRef, position *cursorPosition, ascending bool) bool {
+	if position == nil {
+		return false
+	}
+	order := compareEventCursor(ref, *position)
+	return ascending && order <= 0 || !ascending && order >= 0
 }
 
 func (l *Service) scan(ctx context.Context, snapshot querySnapshot, from, to time.Time, actors []uint32, yield func(Event, error) bool) {

@@ -104,23 +104,24 @@ func (s *Service) Page(ctx context.Context, from, to time.Time, cursor tales.Cur
 		}
 		var data [20]byte
 		n, err := base64.RawURLEncoding.Decode(data[:], []byte(cursor))
-		if err != nil || n != len(data) {
+		switch {
+		case err != nil, n != len(data):
 			return nil, tales.Zero, fmt.Errorf("invalid cursor")
 		}
 		cursorTime = int64(binary.BigEndian.Uint64(data[0:8]))
 		encoded := binary.BigEndian.Uint32(data[16:20])
-		if encoded == 0 {
-			return nil, tales.Zero, fmt.Errorf("invalid cursor")
-		}
-		cursorPosition = encoded - 1
 		lower, upper := from, to
 		if from.After(to) {
 			lower, upper = to, from
 		}
 		at := time.UnixMilli(cursorTime)
-		if at.Before(lower) || at.After(upper) {
+		switch {
+		case encoded == 0:
+			return nil, tales.Zero, fmt.Errorf("invalid cursor")
+		case at.Before(lower), at.After(upper):
 			return nil, tales.Zero, fmt.Errorf("cursor timestamp outside query range")
 		}
+		cursorPosition = encoded - 1
 	}
 	filtered := refs[:0]
 	for _, ref := range refs {
@@ -221,11 +222,11 @@ func containsAll(entry codec.LogEntry, actors []uint32) bool {
 }
 
 func (s *Service) Sync(ctx context.Context) error {
-	if ctx == nil {
+	switch {
+	case ctx == nil:
 		return fmt.Errorf("nil context")
-	}
-	if err := ctx.Err(); err != nil {
-		return err
+	case ctx.Err() != nil:
+		return ctx.Err()
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
