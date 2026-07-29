@@ -25,7 +25,6 @@ type pendingBatch struct {
 	sequence uint64
 	base     uint64
 	chunk    *codec.ChunkEntry
-	err      error
 }
 
 func (l *Service) flushState(ctx context.Context, state *writerState) error {
@@ -65,7 +64,6 @@ func (l *Service) persistPending(ctx context.Context, state *writerState, manife
 	if manifest == nil {
 		manifest, err = l.downloadManifest(ctx, day, l.config.WriterID)
 		if err != nil {
-			pending.err = err
 			return err
 		}
 	}
@@ -87,13 +85,11 @@ func (l *Service) persistPending(ctx context.Context, state *writerState, manife
 	if pending.chunk == nil {
 		chunk, err := l.uploadPendingChunk(ctx, day, pending)
 		if err != nil {
-			pending.err = err
 			return err
 		}
 		pending.chunk = chunk
 	}
 	if err := l.rejectCompactedDay(ctx, pending.batch.Day); err != nil {
-		pending.err = err
 		return err
 	}
 
@@ -109,8 +105,7 @@ func (l *Service) persistPending(ctx context.Context, state *writerState, manife
 		return fmt.Errorf("encode writer manifest: %w", err)
 	}
 	if _, err := l.s3Client.Upload(ctx, keyOfManifest(day, l.config.WriterID), data); err != nil {
-		pending.err = fmt.Errorf("publish writer manifest: %w", err)
-		return pending.err
+		return fmt.Errorf("publish writer manifest: %w", err)
 	}
 	state.manifests[day] = next
 	state.pending = nil

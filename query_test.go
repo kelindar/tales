@@ -121,6 +121,10 @@ func TestQueryEdges(t *testing.T) {
 }
 
 func TestQueryHelpers(t *testing.T) {
+	selected, err := (&Service{}).chunkOrdinals(context.Background(), "", "", map[uint32]codec.Range{1: {}}, 1, []uint32{1, 2})
+	require.NoError(t, err)
+	require.Nil(t, selected)
+
 	entry, err := codec.NewLogEntry(10, "hi", []uint32{1, 2})
 	require.NoError(t, err)
 	require.True(t, containsActors(entry, []uint32{1}))
@@ -149,7 +153,7 @@ func TestQueryHelpers(t *testing.T) {
 	require.True(t, ok.Contains(5))
 
 	day := time.Date(2026, 7, 19, 0, 0, 0, 0, time.UTC)
-	selected := roaring.New()
+	selected = roaring.New()
 	selected.Set(0)
 	refs, err := collectRaw(entry, 1, day, day, day.Add(time.Hour), []uint32{1}, "0000000000000000", 0, selected)
 	require.NoError(t, err)

@@ -92,7 +92,7 @@ func (b *Buffer) Take() (*Batch, error) {
 			return nil, err
 		}
 	}
-	blob := append([]byte(nil), indexBuf.Bytes()...)
+	blob := indexBuf.Bytes()
 	indexes := make([]Index, len(actors))
 	for i, actor := range actors {
 		start := starts[i]

@@ -34,7 +34,6 @@ type Object struct {
 
 type Client interface {
 	Upload(context.Context, string, []byte) (string, error)
-	UploadReader(context.Context, string, io.ReaderAt, int64) (string, error)
 	Download(context.Context, string) ([]byte, error)
 	DownloadRange(context.Context, string, string, int64, int64) ([]byte, error)
 	List(context.Context, string) iter.Seq2[Object, error]
@@ -99,30 +98,6 @@ func (c *S3Client) Upload(ctx context.Context, key string, data []byte) (string,
 		return "", ErrS3Operation{Operation: "write", Err: err}
 	}
 	return etag, nil
-}
-
-// inlineUploadLimit keeps typical writer chunks on the single-PUT path so we
-// get an ETag without a multipart upload buffer or follow-up HEAD.
-const inlineUploadLimit = 16 << 20
-
-func (c *S3Client) UploadReader(ctx context.Context, key string, reader io.ReaderAt, size int64) (string, error) {
-	if size >= 0 && size <= inlineUploadLimit {
-		buf := make([]byte, size)
-		if size > 0 {
-			if _, err := io.ReadFull(io.NewSectionReader(reader, 0, size), buf); err != nil {
-				return "", ErrS3Operation{Operation: "write", Err: err}
-			}
-		}
-		return c.Upload(ctx, key, buf)
-	}
-	if err := c.bucket.WriteFrom(ctx, c.buildKey(key), reader, size); err != nil {
-		return "", ErrS3Operation{Operation: "write", Err: err}
-	}
-	object, err := c.Stat(ctx, key)
-	if err != nil {
-		return "", err
-	}
-	return object.ETag, nil
 }
 
 func (c *S3Client) Download(ctx context.Context, key string) ([]byte, error) {

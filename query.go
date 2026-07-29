@@ -351,15 +351,31 @@ func (l *Service) queryCompactDay(ctx context.Context, day, from, to time.Time, 
 	if selected == nil || selected.Count() == 0 {
 		return nil, nil
 	}
+	selectedBySource := make([]*roaring.Bitmap, len(meta.Sources))
+	sourceIndex := 0
+	selected.Range(func(value uint32) bool {
+		for sourceIndex+1 < len(meta.Sources) && uint64(value) >= meta.Sources[sourceIndex].Base+uint64(meta.Sources[sourceIndex].Entries) {
+			sourceIndex++
+		}
+		local := selectedBySource[sourceIndex]
+		if local == nil {
+			local = roaring.New()
+			selectedBySource[sourceIndex] = local
+		}
+		local.Set(uint32(uint64(value) - meta.Sources[sourceIndex].Base))
+		return true
+	})
+
 	var refs []eventRef
 	fromMillis, toMillis := queryMillis(day, from, to)
 	var writer string
 	var base uint64
-	for _, source := range meta.Sources {
+	for i, source := range meta.Sources {
 		if source.Writer != writer {
 			writer, base = source.Writer, 0
 		}
-		if source.Time[0] > toMillis || source.Time[1] < fromMillis || !overlapsGlobal(selected, source.Base, source.Entries) {
+		local := selectedBySource[i]
+		if source.Time[0] > toMillis || source.Time[1] < fromMillis || local == nil {
 			base += uint64(source.Entries)
 			continue
 		}
@@ -371,13 +387,6 @@ func (l *Service) queryCompactDay(ctx context.Context, day, from, to time.Time, 
 		if err != nil {
 			return nil, fmt.Errorf("decompress compact source: %w", err)
 		}
-		local := roaring.New()
-		selected.Range(func(value uint32) bool {
-			if uint64(value) >= source.Base && uint64(value) < source.Base+uint64(source.Entries) {
-				local.Set(uint32(uint64(value) - source.Base))
-			}
-			return true
-		})
 		chunkRefs, err := collectRaw(raw, source.Entries, day, from, to, actors, source.Writer, base, local)
 		if err != nil {
 			return nil, err
@@ -389,12 +398,15 @@ func (l *Service) queryCompactDay(ctx context.Context, day, from, to time.Time, 
 }
 
 func (l *Service) chunkOrdinals(ctx context.Context, key, etag string, indexes map[uint32]codec.Range, entries uint64, actors []uint32) (*roaring.Bitmap, error) {
-	var selected *roaring.Bitmap
 	for _, actor := range actors {
-		r, ok := indexes[actor]
-		if !ok {
+		if _, ok := indexes[actor]; !ok {
 			return nil, nil
 		}
+	}
+
+	var selected *roaring.Bitmap
+	for _, actor := range actors {
+		r := indexes[actor]
 		data, err := l.s3Client.DownloadRange(ctx, key, etag, r.Offset, r.Size)
 		if err != nil {
 			return nil, err
@@ -606,13 +618,4 @@ func compactEntries(meta *codec.CompactMetadata) uint64 {
 	}
 	last := meta.Sources[len(meta.Sources)-1]
 	return last.Base + uint64(last.Entries)
-}
-
-func overlapsGlobal(bitmap *roaring.Bitmap, base uint64, count uint32) bool {
-	found := false
-	bitmap.Range(func(value uint32) bool {
-		found = uint64(value) >= base && uint64(value) < base+uint64(count)
-		return !found
-	})
-	return found
 }

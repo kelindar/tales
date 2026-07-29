@@ -17,10 +17,9 @@ import (
 
 func TestClient(t *testing.T) {
 	tests := map[string]func(*testing.T){
-		"basics":        testClientBasics,
-		"upload reader": testUploadReader,
-		"list prefix":   testListPrefix,
-		"new client":    testNewClient,
+		"basics":      testClientBasics,
+		"list prefix": testListPrefix,
+		"new client":  testNewClient,
 	}
 	for name, fn := range tests {
 		t.Run(name, fn)
@@ -70,23 +69,6 @@ func testClientBasics(t *testing.T) {
 	require.NoError(t, client.Delete(ctx, key))
 	_, err = client.Stat(ctx, key)
 	require.True(t, IsNoSuchKey(err))
-}
-
-func testUploadReader(t *testing.T) {
-	server := s3mock.New("test-bucket", "us-east-1")
-	defer server.Close()
-	cfg := NewMockConfig(server, "test-bucket", "")
-	client, err := NewMockClient(server, cfg)
-	require.NoError(t, err)
-
-	data := []byte("streamed payload")
-	etag, err := client.UploadReader(context.Background(), "stream.bin", NewMultiReader(data), int64(len(data)))
-	require.NoError(t, err)
-	require.NotEmpty(t, etag)
-
-	out, err := client.Download(context.Background(), "stream.bin")
-	require.NoError(t, err)
-	assert.Equal(t, data, out)
 }
 
 func testListPrefix(t *testing.T) {
