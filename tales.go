@@ -188,8 +188,11 @@ func (l *Service) Log(text string, actors ...uint32) error {
 
 // Sync makes every previously accepted event durable.
 func (l *Service) Sync(ctx context.Context) error {
-	if ctx == nil {
+	switch {
+	case ctx == nil:
 		return fmt.Errorf("nil context")
+	case ctx.Err() != nil:
+		return ctx.Err()
 	}
 	if err := l.begin(); err != nil {
 		return err

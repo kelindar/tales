@@ -550,10 +550,10 @@ func decodeBitmap(data []byte, entries uint64) (*roaring.Bitmap, error) {
 	reader.Reset(data)
 	n, err := bitmap.ReadFrom(reader)
 	bitmapReaderPool.Put(reader)
-	if err != nil {
+	switch {
+	case err != nil:
 		return nil, err
-	}
-	if n != int64(len(data)) {
+	case n != int64(len(data)):
 		return nil, fmt.Errorf("trailing bitmap bytes")
 	}
 	if max, ok := bitmap.Max(); ok && (entries == 0 || uint64(max) >= entries) {

@@ -29,11 +29,11 @@ type sourceChunk struct {
 
 // Compact commits an immutable merged index for an eligible historical UTC day.
 func (l *Service) Compact(ctx context.Context, value time.Time) error {
-	if ctx == nil {
+	switch {
+	case ctx == nil:
 		return fmt.Errorf("nil context")
-	}
-	if err := ctx.Err(); err != nil {
-		return err
+	case ctx.Err() != nil:
+		return ctx.Err()
 	}
 	if err := l.begin(); err != nil {
 		return err

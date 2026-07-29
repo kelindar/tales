@@ -70,7 +70,8 @@ func (l *Service) persistPending(ctx context.Context, state *writerState, manife
 		}
 	}
 
-	if pending.sequence < uint64(len(manifest.Chunks)) {
+	switch {
+	case pending.sequence < uint64(len(manifest.Chunks)):
 		committed := manifest.Chunks[pending.sequence]
 		if pending.chunk == nil || !reflect.DeepEqual(committed, *pending.chunk) {
 			return fmt.Errorf("writer manifest sequence %d conflicts with pending batch", pending.sequence)
@@ -79,8 +80,7 @@ func (l *Service) persistPending(ctx context.Context, state *writerState, manife
 		state.pending = nil
 		l.invalidateDiscovery(day)
 		return nil
-	}
-	if manifest.NextSequence() != pending.sequence {
+	case manifest.NextSequence() != pending.sequence:
 		return fmt.Errorf("writer manifest advanced unexpectedly")
 	}
 
@@ -178,10 +178,10 @@ func (l *Service) rejectCompactedDay(ctx context.Context, day time.Time) error {
 	compacted := l.compactMeta[dayName] != nil
 	missAt, missed := l.compactMiss[dayName]
 	l.cacheMu.Unlock()
-	if compacted {
+	switch {
+	case compacted:
 		return fmt.Errorf("day %s is already compacted", dayName)
-	}
-	if missed && now.Sub(missAt) < l.config.ChunkInterval {
+	case missed && now.Sub(missAt) < l.config.ChunkInterval:
 		return nil
 	}
 

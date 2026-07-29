@@ -160,11 +160,11 @@ type eventRef struct {
 }
 
 func (s *Service) query(ctx context.Context, from, to time.Time, actors []uint32) ([]eventRef, error) {
-	if ctx == nil || len(actors) == 0 {
+	switch {
+	case ctx == nil || len(actors) == 0:
 		return nil, fmt.Errorf("invalid query arguments")
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
+	case ctx.Err() != nil:
+		return nil, ctx.Err()
 	}
 	s.mu.RLock()
 	if s.closed {
