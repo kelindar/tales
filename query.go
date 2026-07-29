@@ -124,10 +124,9 @@ func newPageWindow(from, to time.Time, position *cursorPosition) (pageWindow, er
 		if at.Before(lower) || at.After(upper) {
 			return pageWindow{}, fmt.Errorf("cursor timestamp outside query range")
 		}
-		switch {
-		case ascending:
+		if ascending {
 			lower = at
-		default:
+		} else {
 			upper = at
 		}
 	}
