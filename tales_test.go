@@ -51,7 +51,7 @@ func TestDistributedWriters(t *testing.T) {
 
 	reader := testService(t, server, "shared", "reader", func(c *config) { c.now = func() time.Time { return now } })
 	defer reader.Close()
-	events := collectEvents(t, reader.Query(context.Background(), now.Add(-time.Second), now.Add(time.Second), 1))
+	events := collectEvents(t, reader.Scan(context.Background(), now.Add(-time.Second), now.Add(time.Second), 1))
 	require.Len(t, events, 4)
 	writers := []*Service{a, b}
 	if writers[1].config.WriterID < writers[0].config.WriterID {
@@ -76,7 +76,7 @@ func TestWarmQuery(t *testing.T) {
 	defer service.Close()
 
 	require.NoError(t, service.Log(`{"value":1}`, 1, 2))
-	events := collectEvents(t, service.Query(context.Background(), now, now, 1, 2))
+	events := collectEvents(t, service.Scan(context.Background(), now, now, 1, 2))
 	require.Len(t, events, 1)
 	require.Equal(t, events[0].Bytes(), []byte(events[0].JSON()))
 	clone := events[0].Clone()
@@ -99,7 +99,7 @@ func TestCloseRetry(t *testing.T) {
 	require.NoError(t, service.Sync(context.Background()))
 
 	now := time.Now()
-	events := collectEvents(t, service.Query(context.Background(), now.Add(-time.Hour), now.Add(time.Hour), 1))
+	events := collectEvents(t, service.Scan(context.Background(), now.Add(-time.Hour), now.Add(time.Hour), 1))
 	require.Equal(t, []string{"one", "two"}, eventTexts(events))
 	require.NoError(t, service.Close())
 }
@@ -118,7 +118,7 @@ func TestAmbiguousCommit(t *testing.T) {
 	manifest, err := service.downloadManifest(context.Background(), dayKey(time.Now()), service.config.WriterID)
 	require.NoError(t, err)
 	require.Len(t, manifest.Chunks, 1)
-	events := collectEvents(t, service.Query(context.Background(), time.Now().Add(-time.Hour), time.Now().Add(time.Hour), 1))
+	events := collectEvents(t, service.Scan(context.Background(), time.Now().Add(-time.Hour), time.Now().Add(time.Hour), 1))
 	require.Equal(t, []string{"once"}, eventTexts(events))
 }
 
@@ -138,7 +138,7 @@ func TestWarmSnapshot(t *testing.T) {
 	done := make(chan queryResult, 1)
 	go func() {
 		var result queryResult
-		for event, err := range service.Query(context.Background(), time.Now().Add(-time.Hour), time.Now().Add(time.Hour), 1) {
+		for event, err := range service.Scan(context.Background(), time.Now().Add(-time.Hour), time.Now().Add(time.Hour), 1) {
 			if err != nil {
 				result.err = err
 				break
@@ -162,9 +162,9 @@ func TestDiscoveryCache(t *testing.T) {
 	require.NoError(t, service.Log("one", 1))
 	require.NoError(t, service.Sync(context.Background()))
 	from, to := time.Now().Add(-time.Hour), time.Now().Add(time.Hour)
-	collectEvents(t, service.Query(context.Background(), from, to, 1))
+	collectEvents(t, service.Scan(context.Background(), from, to, 1))
 	lists := countMethod(server, "GET", "writers")
-	collectEvents(t, service.Query(context.Background(), from, to, 1))
+	collectEvents(t, service.Scan(context.Background(), from, to, 1))
 	require.Equal(t, lists, countMethod(server, "GET", "writers"))
 	require.NoError(t, service.Close())
 }
@@ -183,9 +183,9 @@ func TestCompactionEquivalence(t *testing.T) {
 	service := testService(t, server, "compact", "compactor", func(c *config) { c.now = func() time.Time { return future } })
 	defer service.Close()
 	from, to := old.Add(-time.Hour), old.Add(time.Hour)
-	before := eventTexts(collectEvents(t, service.Query(context.Background(), from, to, 1)))
+	before := eventTexts(collectEvents(t, service.Scan(context.Background(), from, to, 1)))
 	require.NoError(t, service.Compact(context.Background(), old))
-	after := eventTexts(collectEvents(t, service.Query(context.Background(), from, to, 1)))
+	after := eventTexts(collectEvents(t, service.Scan(context.Background(), from, to, 1)))
 	require.Equal(t, before, after)
 	require.True(t, server.ObjectExists("compact/"+keyOfCompactMeta(dayKey(old))))
 	require.NoError(t, service.Compact(context.Background(), old))
@@ -214,7 +214,7 @@ func TestCompactionCommit(t *testing.T) {
 	defer service.Close()
 	require.Error(t, service.Compact(context.Background(), old))
 	require.False(t, server.ObjectExists("commit/"+keyOfCompactMeta(dayKey(old))))
-	require.Equal(t, []string{"one"}, eventTexts(collectEvents(t, service.Query(context.Background(), old.Add(-time.Hour), old.Add(time.Hour), 1))))
+	require.Equal(t, []string{"one"}, eventTexts(collectEvents(t, service.Scan(context.Background(), old.Add(-time.Hour), old.Add(time.Hour), 1))))
 	client.fail = false
 	require.NoError(t, service.Compact(context.Background(), old))
 }
@@ -265,13 +265,13 @@ func TestServerCopy(t *testing.T) {
 	cleanup := &deleteFailClient{Client: service.s3Client, fail: true}
 	service.s3Client = cleanup
 	require.Error(t, service.Compact(context.Background(), old))
-	require.Len(t, collectEvents(t, service.Query(context.Background(), old.Add(-time.Hour), old.Add(time.Hour), 1)), 180)
+	require.Len(t, collectEvents(t, service.Scan(context.Background(), old.Add(-time.Hour), old.Add(time.Hour), 1)), 180)
 	cleanup.fail = false
 	require.NoError(t, service.Compact(context.Background(), old))
 	require.False(t, server.ObjectExists(firstSource))
 	require.True(t, server.ObjectExists(secondSource))
 	require.NoError(t, service.Compact(context.Background(), old))
-	events := collectEvents(t, service.Query(context.Background(), old.Add(-time.Hour), old.Add(time.Hour), 1))
+	events := collectEvents(t, service.Scan(context.Background(), old.Add(-time.Hour), old.Add(time.Hour), 1))
 	require.Len(t, events, 180)
 }
 
@@ -284,7 +284,7 @@ func TestQueryErrors(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		count := 0
-		for _, err := range service.Query(ctx, time.Now().Add(-time.Hour), time.Now(), 1) {
+		for _, err := range service.Scan(ctx, time.Now().Add(-time.Hour), time.Now(), 1) {
 			require.ErrorIs(t, err, context.Canceled)
 			count++
 		}
@@ -297,7 +297,7 @@ func TestQueryErrors(t *testing.T) {
 		service := testService(t, server, "arguments", "writer")
 		defer service.Close()
 		count := 0
-		for _, err := range service.Query(context.Background(), time.Now(), time.Now().Add(-time.Hour), 1) {
+		for _, err := range service.Scan(context.Background(), time.Now(), time.Now().Add(-time.Hour)) {
 			require.Error(t, err)
 			count++
 		}
@@ -318,7 +318,7 @@ func TestQueryErrors(t *testing.T) {
 		reader := testService(t, server, "malformed", "reader", func(c *config) { c.now = func() time.Time { return now } })
 		defer reader.Close()
 		count := 0
-		for _, err := range reader.Query(context.Background(), now.Add(-time.Hour), now.Add(time.Hour), 1) {
+		for _, err := range reader.Scan(context.Background(), now.Add(-time.Hour), now.Add(time.Hour), 1) {
 			require.Error(t, err)
 			count++
 		}
@@ -367,11 +367,11 @@ func TestLogGuards(t *testing.T) {
 	require.NoError(t, service.Log("two", 1)) // forces flush via accept buffer full path
 	require.NoError(t, service.Sync(context.Background()))
 
-	for _, err := range service.Query(nil, time.Now().Add(-time.Hour), time.Now(), 1) {
+	for _, err := range service.Scan(nil, time.Now().Add(-time.Hour), time.Now(), 1) {
 		require.Error(t, err)
 		break
 	}
-	for _, err := range service.Query(context.Background(), time.Now().Add(-time.Hour), time.Now()) {
+	for _, err := range service.Scan(context.Background(), time.Now().Add(-time.Hour), time.Now()) {
 		require.Error(t, err)
 		break
 	}
@@ -392,7 +392,7 @@ func TestDayRollover(t *testing.T) {
 	require.NoError(t, service.Log("day-two", 1))
 	require.NoError(t, service.Sync(context.Background()))
 
-	events := collectEvents(t, service.Query(context.Background(), now.Add(-time.Hour), current.Add(time.Hour), 1))
+	events := collectEvents(t, service.Scan(context.Background(), now.Add(-time.Hour), current.Add(time.Hour), 1))
 	require.Equal(t, []string{"day-one", "day-two"}, eventTexts(events))
 }
 
@@ -422,7 +422,7 @@ func TestLifecycle(t *testing.T) {
 		},
 		func() {
 			for range 20 {
-				for range service.Query(context.Background(), time.Now().Add(-time.Hour), time.Now().Add(time.Hour), 1) {
+				for range service.Scan(context.Background(), time.Now().Add(-time.Hour), time.Now().Add(time.Hour), 1) {
 				}
 			}
 		},

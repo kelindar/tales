@@ -144,11 +144,11 @@ func (c *S3Client) DownloadRange(ctx context.Context, key, etag string, offset, 
 	if err == nil {
 		err = ctx.Err()
 	}
-	if err == nil && int64(len(data)) != size {
-		err = io.ErrUnexpectedEOF
-	}
-	if err != nil {
+	switch {
+	case err != nil:
 		return nil, ErrS3Operation{Operation: "range", Err: err}
+	case int64(len(data)) != size:
+		return nil, ErrS3Operation{Operation: "range", Err: io.ErrUnexpectedEOF}
 	}
 	return data, nil
 }

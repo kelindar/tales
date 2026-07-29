@@ -20,23 +20,27 @@ const (
 )
 
 func main() {
+	ctx := context.Background()
 	appendLogger := newLogger()
 	defer appendLogger.Close()
+
+	syncLogger := newLogger()
+	defer syncLogger.Close()
 
 	queryLogger := newLogger()
 	defer queryLogger.Close()
 	for range entries {
 		must(queryLogger.Log("hello world", 1))
 	}
-	must(queryLogger.Sync(context.Background()))
+	must(queryLogger.Sync(ctx))
 
 	from := time.Now().Add(-time.Hour)
-	for _, err := range queryLogger.Query(context.Background(), from, time.Now().Add(time.Hour), 1) {
+	for _, err := range queryLogger.Scan(ctx, from, time.Now().Add(time.Hour), 1) {
 		must(err)
 	}
 	to := time.Now().Add(time.Hour)
 	count := 0
-	for _, err := range queryLogger.Query(context.Background(), from, to, 1) {
+	for _, err := range queryLogger.Scan(ctx, from, to, 1) {
 		must(err)
 		count++
 	}
@@ -52,9 +56,33 @@ func main() {
 			must(appendLogger.Log("hello world", 1))
 		})
 
-		b.Run("query", func(int) {
-			for _, err := range queryLogger.Query(context.Background(), from, to, 1) {
+		b.Run("sync", func(int) {
+			must(syncLogger.Log("hello world", 1))
+			must(syncLogger.Sync(ctx))
+		})
+
+		b.Run("scan-100k", func(int) {
+			for _, err := range queryLogger.Scan(ctx, from, to, 1) {
 				must(err)
+			}
+		})
+
+		b.Run("scan-50", func(int) {
+			count := 0
+			for _, err := range queryLogger.Scan(ctx, to, from, 1) {
+				must(err)
+				count++
+				if count == 50 {
+					break
+				}
+			}
+		})
+
+		b.Run("page-50", func(int) {
+			events, next, err := queryLogger.Page(ctx, to, from, tales.Zero, 50, 1)
+			must(err)
+			if len(events) != 50 || next == tales.Zero {
+				panic("page incomplete")
 			}
 		})
 
@@ -63,7 +91,7 @@ func main() {
 			if index >= compactionDays {
 				panic("compaction benchmark exhausted seeded days")
 			}
-			must(compactLogger.Compact(context.Background(), firstCompactDay.AddDate(0, 0, -index)))
+			must(compactLogger.Compact(ctx, firstCompactDay.AddDate(0, 0, -index)))
 		})
 	})
 }
