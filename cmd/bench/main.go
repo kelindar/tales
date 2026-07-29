@@ -24,6 +24,9 @@ func main() {
 	appendLogger := newLogger()
 	defer appendLogger.Close()
 
+	syncLogger := newLogger()
+	defer syncLogger.Close()
+
 	queryLogger := newLogger()
 	defer queryLogger.Close()
 	for range entries {
@@ -51,6 +54,11 @@ func main() {
 	bench.Run(func(b *bench.B) {
 		b.Run("append", func(int) {
 			must(appendLogger.Log("hello world", 1))
+		})
+
+		b.Run("sync", func(int) {
+			must(syncLogger.Log("hello world", 1))
+			must(syncLogger.Sync(ctx))
 		})
 
 		b.Run("scan-100k", func(int) {
