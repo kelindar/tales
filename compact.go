@@ -115,10 +115,10 @@ func (l *Service) composeCompactPayload(ctx context.Context, day string, sources
 	}
 	key := keyOfCompactData(day)
 	etag, err := l.s3Client.Compose(ctx, key, parts)
-	if err != nil {
-		if s3.IsComposeUnsupported(err) {
-			return nil
-		}
+	switch {
+	case s3.IsComposeUnsupported(err):
+		return nil
+	case err != nil:
 		return err
 	}
 	var offset int64

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kelindar/tales"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -34,14 +35,14 @@ func testLogQuery(t *testing.T) {
 	to := now.Add(time.Minute)
 
 	var results []string
-	for event, err := range svc.Query(context.Background(), from, to, 1) {
+	for event, err := range svc.Scan(context.Background(), from, to, 1) {
 		assert.NoError(t, err)
 		results = append(results, event.Text())
 	}
 	assert.Equal(t, []string{"third"}, results)
 
 	results = results[:0]
-	for event, err := range svc.Query(context.Background(), from, to, 2) {
+	for event, err := range svc.Scan(context.Background(), from, to, 2) {
 		assert.NoError(t, err)
 		results = append(results, event.Text())
 	}
@@ -59,7 +60,7 @@ func testQueryIntersection(t *testing.T) {
 	to := now.Add(time.Minute)
 
 	var res []string
-	for event, err := range svc.Query(context.Background(), from, to, 1, 2) {
+	for event, err := range svc.Scan(context.Background(), from, to, 1, 2) {
 		assert.NoError(t, err)
 		res = append(res, event.Text())
 	}
@@ -92,23 +93,32 @@ func testQueryFilters(t *testing.T) {
 	to := now.Add(time.Minute)
 
 	var texts []string
-	for event, err := range svc.Query(context.Background(), from, to, 1) {
+	for event, err := range svc.Scan(context.Background(), from, to, 1) {
 		assert.NoError(t, err)
 		texts = append(texts, event.Text())
 	}
 	assert.Equal(t, []string{"keep"}, texts)
 
-	for range svc.Query(context.Background(), now.Add(time.Hour), now.Add(2*time.Hour), 1) {
+	for range svc.Scan(context.Background(), now.Add(time.Hour), now.Add(2*time.Hour), 1) {
 		t.Fatal("expected no results outside time range")
 	}
 
 	count := 0
 	svc.Log("second", 1)
-	for range svc.Query(context.Background(), from, to, 1) {
+	for range svc.Scan(context.Background(), from, to, 1) {
 		count++
 		break
 	}
 	assert.Equal(t, 1, count)
+
+	events, next, err := svc.Page(context.Background(), to, from, tales.Zero, 1, 1)
+	require.NoError(t, err)
+	require.Equal(t, []string{"second"}, []string{events[0].Text()})
+	require.NotEmpty(t, next)
+	events, next, err = svc.Page(context.Background(), to, from, next, 1, 1)
+	require.NoError(t, err)
+	require.Equal(t, []string{"keep"}, []string{events[0].Text()})
+	require.Empty(t, next)
 }
 
 func testServiceEdges(t *testing.T) {
@@ -125,21 +135,23 @@ func testServiceEdges(t *testing.T) {
 	require.NoError(t, svc.Log("ok", 1))
 	require.NoError(t, svc.Sync(context.Background()))
 
-	for _, err := range svc.Query(nil, time.Now().Add(-time.Minute), time.Now(), 1) {
+	for _, err := range svc.Scan(nil, time.Now().Add(-time.Minute), time.Now(), 1) {
 		require.Error(t, err)
 		break
 	}
-	for _, err := range svc.Query(context.Background(), time.Now(), time.Now().Add(-time.Minute), 1) {
-		require.Error(t, err)
-		break
+	count := 0
+	for _, err := range svc.Scan(context.Background(), time.Now(), time.Now().Add(-time.Minute), 1) {
+		require.NoError(t, err)
+		count++
 	}
-	for _, err := range svc.Query(context.Background(), time.Now().Add(-time.Minute), time.Now()) {
+	require.Equal(t, 1, count)
+	for _, err := range svc.Scan(context.Background(), time.Now().Add(-time.Minute), time.Now()) {
 		require.Error(t, err)
 		break
 	}
 
 	require.NoError(t, svc.Close())
-	for _, err := range svc.Query(context.Background(), time.Now().Add(-time.Minute), time.Now(), 1) {
+	for _, err := range svc.Scan(context.Background(), time.Now().Add(-time.Minute), time.Now(), 1) {
 		require.Error(t, err)
 		break
 	}

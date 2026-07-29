@@ -22,6 +22,7 @@ type writerState struct {
 type pendingBatch struct {
 	batch    *buffer.Batch
 	sequence uint64
+	base     uint64
 	chunk    *codec.ChunkEntry
 	err      error
 }
@@ -45,7 +46,7 @@ func (l *Service) flushState(ctx context.Context, state *writerState) error {
 	if err != nil {
 		return fmt.Errorf("encode pending batch: %w", err)
 	}
-	state.pending = &pendingBatch{batch: batch, sequence: manifest.NextSequence()}
+	state.pending = &pendingBatch{batch: batch, sequence: manifest.NextSequence(), base: manifestEntries(manifest)}
 	return l.persistPending(ctx, state, manifest)
 }
 
@@ -198,7 +199,7 @@ func (l *Service) snapshot(ctx context.Context, state *writerState) (querySnapsh
 		}
 	}
 	if pending := state.pending; pending != nil {
-		addLocalSnapshot(&snapshot, localChunk{day: pending.batch.Day, sequence: pending.sequence, entries: pending.batch.Entries, raw: pending.batch.Raw})
+		addLocalSnapshot(&snapshot, localChunk{day: pending.batch.Day, sequence: pending.sequence, base: pending.base, entries: pending.batch.Entries, raw: pending.batch.Raw})
 	}
 	if local, ok := activeSnapshot(state); ok {
 		addLocalSnapshot(&snapshot, local)
@@ -231,13 +232,24 @@ func activeSnapshot(state *writerState) (localChunk, bool) {
 	}
 	key := dayKey(day)
 	var sequence uint64
+	var base uint64
 	if manifest := state.manifests[key]; manifest != nil {
 		sequence = manifest.NextSequence()
+		base = manifestEntries(manifest)
 	}
 	if state.pending != nil && state.pending.batch.Day.Equal(day) {
 		sequence = state.pending.sequence + 1
+		base = state.pending.base + uint64(state.pending.batch.Entries)
 	}
-	return localChunk{day: day, sequence: sequence, entries: entries, raw: raw}, true
+	return localChunk{day: day, sequence: sequence, base: base, entries: entries, raw: raw}, true
+}
+
+func manifestEntries(manifest *codec.Manifest) uint64 {
+	var total uint64
+	for _, chunk := range manifest.Chunks {
+		total += uint64(chunk.Entries)
+	}
+	return total
 }
 
 func addLocalSnapshot(snapshot *querySnapshot, local localChunk) {

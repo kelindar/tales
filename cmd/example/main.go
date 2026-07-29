@@ -98,7 +98,7 @@ func runSimulation(logger *tales.Service, duration time.Duration) {
 }
 
 func demoQueries(logger *tales.Service) {
-	log.Println("\n=== Query Demo ===")
+	log.Println("\n=== Scan Demo ===")
 
 	now := time.Now()
 	from := now.Add(-12 * time.Hour)
@@ -107,9 +107,9 @@ func demoQueries(logger *tales.Service) {
 	actor := actors[0]
 	log.Printf("\nConversations for %s:", actor.name)
 	count := 0
-	for event, err := range logger.Query(context.Background(), from, now, actor.id) {
+	for event, err := range logger.Scan(context.Background(), from, now, actor.id) {
 		if err != nil {
-			log.Printf("  Query failed: %v", err)
+			log.Printf("  Scan failed: %v", err)
 			return
 		}
 		log.Printf("  [%s] %s", event.Time().Format("15:04:05"), event.Text())

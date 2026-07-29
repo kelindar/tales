@@ -1,9 +1,14 @@
 package mock
 
 import (
+	"cmp"
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"iter"
+	"math"
+	"sort"
 	"sync"
 	"time"
 
@@ -13,17 +18,20 @@ import (
 
 // Service is an in-memory implementation of tales.Manager for tests.
 type Service struct {
-	mu       sync.RWMutex
-	capacity int
-	buf      []logEntry
-	next     int
-	size     int
-	closed   bool
+	mu        sync.RWMutex
+	capacity  int
+	buf       []logEntry
+	next      int
+	size      int
+	serialDay time.Time
+	serial    uint32
+	closed    bool
 }
 
 type logEntry struct {
-	day   time.Time
-	entry codec.LogEntry
+	day      time.Time
+	entry    codec.LogEntry
+	position uint32
 }
 
 // NewService creates a fixed-capacity in-memory event log.
@@ -49,7 +57,14 @@ func (s *Service) Log(text string, actors ...uint32) error {
 	if s.closed {
 		return fmt.Errorf("tales service is closed")
 	}
-	s.buf[s.next] = logEntry{day: day, entry: entry}
+	if !s.serialDay.Equal(day) {
+		s.serialDay, s.serial = day, 0
+	}
+	if s.serial == math.MaxUint32 {
+		return fmt.Errorf("writer-day position exceeds cursor capacity")
+	}
+	s.buf[s.next] = logEntry{day: day, entry: entry, position: s.serial}
+	s.serial++
 	s.next = (s.next + 1) % s.capacity
 	if s.size < s.capacity {
 		s.size++
@@ -57,42 +72,139 @@ func (s *Service) Log(text string, actors ...uint32) error {
 	return nil
 }
 
-func (s *Service) Query(ctx context.Context, from, to time.Time, actors ...uint32) iter.Seq2[tales.Event, error] {
+func (s *Service) Scan(ctx context.Context, from, to time.Time, actors ...uint32) iter.Seq2[tales.Event, error] {
 	return func(yield func(tales.Event, error) bool) {
-		if ctx == nil || from.After(to) || len(actors) == 0 {
-			yield(tales.Event{}, fmt.Errorf("invalid query arguments"))
+		refs, err := s.query(ctx, from, to, actors)
+		if err != nil {
+			yield(tales.Event{}, err)
 			return
 		}
-		s.mu.RLock()
-		if s.closed {
-			s.mu.RUnlock()
-			yield(tales.Event{}, fmt.Errorf("tales service is closed"))
-			return
-		}
-		index := s.next - s.size
-		if index < 0 {
-			index += s.capacity
-		}
-		entries := make([]logEntry, 0, s.size)
-		for range s.size {
-			entries = append(entries, s.buf[index])
-			index = (index + 1) % s.capacity
-		}
-		s.mu.RUnlock()
-		for _, entry := range entries {
-			if err := ctx.Err(); err != nil {
-				yield(tales.Event{}, err)
-				return
-			}
-			event := codec.NewEvent(entry.day, entry.entry)
-			if event.Time().Before(from) || event.Time().After(to) || !containsAll(entry.entry, actors) {
-				continue
-			}
-			if !yield(event, nil) {
+		for _, ref := range refs {
+			if !yield(ref.event, nil) {
 				return
 			}
 		}
 	}
+}
+
+func (s *Service) Page(ctx context.Context, from, to time.Time, cursor tales.Cursor, limit int, actors ...uint32) ([]tales.Event, tales.Cursor, error) {
+	if limit < 1 || limit > 1000 {
+		return nil, tales.Zero, fmt.Errorf("invalid limit")
+	}
+	refs, err := s.query(ctx, from, to, actors)
+	if err != nil {
+		return nil, tales.Zero, err
+	}
+	ascending := !from.After(to)
+	var cursorTime int64
+	var cursorPosition uint32
+	if cursor != tales.Zero {
+		if len(cursor) != 27 {
+			return nil, tales.Zero, fmt.Errorf("invalid cursor")
+		}
+		var data [20]byte
+		n, err := base64.RawURLEncoding.Decode(data[:], []byte(cursor))
+		if err != nil || n != len(data) {
+			return nil, tales.Zero, fmt.Errorf("invalid cursor")
+		}
+		cursorTime = int64(binary.BigEndian.Uint64(data[0:8]))
+		encoded := binary.BigEndian.Uint32(data[16:20])
+		if encoded == 0 {
+			return nil, tales.Zero, fmt.Errorf("invalid cursor")
+		}
+		cursorPosition = encoded - 1
+		lower, upper := from, to
+		if from.After(to) {
+			lower, upper = to, from
+		}
+		at := time.UnixMilli(cursorTime)
+		if at.Before(lower) || at.After(upper) {
+			return nil, tales.Zero, fmt.Errorf("cursor timestamp outside query range")
+		}
+	}
+	filtered := refs[:0]
+	for _, ref := range refs {
+		if cursor != tales.Zero {
+			order := cmp.Compare(ref.event.Time().UnixMilli(), cursorTime)
+			if order == 0 {
+				order = cmp.Compare(ref.position, cursorPosition)
+			}
+			if ascending && order <= 0 || !ascending && order >= 0 {
+				continue
+			}
+		}
+		filtered = append(filtered, ref)
+		if len(filtered) == limit+1 {
+			break
+		}
+	}
+	events := make([]tales.Event, min(limit, len(filtered)))
+	for i := range events {
+		events[i] = filtered[i].event
+	}
+	next := tales.Zero
+	if len(filtered) > limit {
+		last := filtered[limit-1]
+		var data [20]byte
+		binary.BigEndian.PutUint64(data[0:8], uint64(last.event.Time().UnixMilli()))
+		binary.BigEndian.PutUint32(data[16:20], last.position+1)
+		next = tales.Cursor(base64.RawURLEncoding.EncodeToString(data[:]))
+	}
+	return events, next, nil
+}
+
+type eventRef struct {
+	event    tales.Event
+	position uint32
+}
+
+func (s *Service) query(ctx context.Context, from, to time.Time, actors []uint32) ([]eventRef, error) {
+	if ctx == nil || len(actors) == 0 {
+		return nil, fmt.Errorf("invalid query arguments")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	if s.closed {
+		s.mu.RUnlock()
+		return nil, fmt.Errorf("tales service is closed")
+	}
+	index := s.next - s.size
+	if index < 0 {
+		index += s.capacity
+	}
+	entries := make([]logEntry, 0, s.size)
+	for range s.size {
+		entries = append(entries, s.buf[index])
+		index = (index + 1) % s.capacity
+	}
+	s.mu.RUnlock()
+
+	lower, upper := from, to
+	ascending := !from.After(to)
+	if !ascending {
+		lower, upper = to, from
+	}
+	refs := make([]eventRef, 0, len(entries))
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		event := codec.NewEvent(entry.day, entry.entry)
+		if event.Time().Before(lower) || event.Time().After(upper) || !containsAll(entry.entry, actors) {
+			continue
+		}
+		refs = append(refs, eventRef{event: event, position: entry.position})
+	}
+	sort.Slice(refs, func(i, j int) bool {
+		order := refs[i].event.Time().Compare(refs[j].event.Time())
+		if order == 0 {
+			order = cmp.Compare(refs[i].position, refs[j].position)
+		}
+		return ascending && order < 0 || !ascending && order > 0
+	})
+	return refs, nil
 }
 
 func containsAll(entry codec.LogEntry, actors []uint32) bool {

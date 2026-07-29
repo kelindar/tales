@@ -26,9 +26,10 @@ type Logger interface {
 	Log(text string, actors ...uint32) error
 }
 
-// Querier reads events in deterministic order within inclusive time bounds.
+// Querier reads events in deterministic order.
 type Querier interface {
-	Query(context.Context, time.Time, time.Time, ...uint32) iter.Seq2[Event, error]
+	Page(context.Context, time.Time, time.Time, Cursor, int, ...uint32) ([]Event, Cursor, error)
+	Scan(context.Context, time.Time, time.Time, ...uint32) iter.Seq2[Event, error]
 }
 
 // Syncer makes all previously accepted events durable.
@@ -207,14 +208,15 @@ func (l *Service) Sync(ctx context.Context) error {
 	}
 }
 
-// Query yields events containing every actor within inclusive time bounds.
-func (l *Service) Query(ctx context.Context, from, to time.Time, actors ...uint32) iter.Seq2[Event, error] {
+// Scan yields events containing every actor from one inclusive bound toward
+// the other, ascending when from <= to and descending otherwise.
+func (l *Service) Scan(ctx context.Context, from, to time.Time, actors ...uint32) iter.Seq2[Event, error] {
 	return func(yield func(Event, error) bool) {
 		switch {
 		case ctx == nil:
 			yield(Event{}, fmt.Errorf("nil context"))
 			return
-		case from.After(to) || len(actors) == 0:
+		case len(actors) == 0:
 			yield(Event{}, fmt.Errorf("invalid query arguments"))
 			return
 		}
@@ -224,25 +226,27 @@ func (l *Service) Query(ctx context.Context, from, to time.Time, actors ...uint3
 		}
 		defer l.active.Done()
 
-		reply := make(chan snapshotResult, 1)
-		select {
-		case l.commands <- command{snapshot: &snapshotCmd{ctx: ctx, reply: reply}}:
-		case <-ctx.Done():
-			yield(Event{}, ctx.Err())
+		snapshot, err := l.acquireSnapshot(ctx)
+		if err != nil {
+			yield(Event{}, err)
 			return
 		}
-		var result snapshotResult
-		select {
-		case result = <-reply:
-		case <-ctx.Done():
-			yield(Event{}, ctx.Err())
-			return
-		}
-		if result.err != nil {
-			yield(Event{}, result.err)
-			return
-		}
-		l.query(ctx, result.snapshot, from.UTC(), to.UTC(), actors, yield)
+		l.scan(ctx, snapshot, from.UTC(), to.UTC(), actors, yield)
+	}
+}
+
+func (l *Service) acquireSnapshot(ctx context.Context) (querySnapshot, error) {
+	reply := make(chan snapshotResult, 1)
+	select {
+	case l.commands <- command{snapshot: &snapshotCmd{ctx: ctx, reply: reply}}:
+	case <-ctx.Done():
+		return querySnapshot{}, ctx.Err()
+	}
+	select {
+	case result := <-reply:
+		return result.snapshot, result.err
+	case <-ctx.Done():
+		return querySnapshot{}, ctx.Err()
 	}
 }
 

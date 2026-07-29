@@ -28,10 +28,10 @@ func TestPendingCutoff(t *testing.T) {
 	second.s3Client = client
 	defer second.Close()
 	require.NoError(t, second.Log("pending", 1))
-	events := collectEvents(t, second.Query(context.Background(), now, now, 1))
+	events := collectEvents(t, second.Scan(context.Background(), now, now, 1))
 	require.Equal(t, []string{"committed", "pending"}, eventTexts(events))
 	require.Error(t, second.Sync(context.Background()))
-	events = collectEvents(t, second.Query(context.Background(), now, now, 1))
+	events = collectEvents(t, second.Scan(context.Background(), now, now, 1))
 	require.Equal(t, []string{"committed", "pending"}, eventTexts(events))
 	client.failManifest = false
 }
@@ -47,5 +47,5 @@ func TestSyncCancellation(t *testing.T) {
 	cancel()
 	require.ErrorIs(t, service.Sync(ctx), context.Canceled)
 	require.NoError(t, service.Sync(context.Background()))
-	require.Equal(t, []string{"one"}, eventTexts(collectEvents(t, service.Query(context.Background(), now, now, 1))))
+	require.Equal(t, []string{"one"}, eventTexts(collectEvents(t, service.Scan(context.Background(), now, now, 1))))
 }

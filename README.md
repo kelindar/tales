@@ -3,7 +3,6 @@
   <br>
   <img src="https://img.shields.io/github/go-mod/go-version/kelindar/tales" alt="Go Version">
   <a href="https://pkg.go.dev/github.com/kelindar/tales"><img src="https://pkg.go.dev/badge/github.com/kelindar/tales" alt="PkgGoDev"></a>
-  <a href="https://goreportcard.com/report/github.com/kelindar/tales"><img src="https://goreportcard.com/badge/github.com/kelindar/tales" alt="Go Report Card"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
 </p>
 
@@ -64,7 +63,7 @@ func main() {
 
 	from := time.Now().Add(-time.Hour)
 	to := time.Now()
-	for event, err := range logger.Query(ctx, from, to, 12345) {
+	for event, err := range logger.Scan(ctx, from, to, 12345) {
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -79,7 +78,28 @@ func main() {
 
 `Log` returns after the event has been accepted into memory. Call `Sync` when it must be committed to S3. A failed `Close` leaves the service open so `Sync` or `Close` can be retried.
 
-Actor arguments to `Query` are combined with AND. Both time bounds are inclusive, and results are returned in a stable order. Event views are read-only and may refer to downloaded data; call `Clone` before retaining or modifying one independently.
+Actor arguments to `Scan` and `Page` are combined with AND. Both time bounds are inclusive. Results ascend when the first bound is earlier and descend when it is later. Event views are read-only and may refer to downloaded data; call `Clone` before retaining or modifying one independently.
+
+Use `Page` for bounded pagination:
+
+```go
+cursor := tales.Zero
+for {
+	events, next, err := logger.Page(ctx, to, from, cursor, 50, 12345)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, event := range events { // Newest first because to > from.
+		log.Println(event.Text())
+	}
+	if next == tales.Zero {
+		break
+	}
+	cursor = next
+}
+```
+
+`Cursor` is an opaque URL-safe string. Store it directly in a URL with `cursor.String()` and restore it with `tales.Cursor(value)`. `Page` validates malformed cursors. Reuse a cursor only with the same time bounds and actors.
 
 Each service owns one writer ID. Tales creates one automatically, or `WithWriterID("game-server-1")` can derive a stable ID from a deployment name. Only one live process may use a given writer ID.
 
