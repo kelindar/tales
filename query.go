@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kelindar/roaring"
@@ -415,17 +416,25 @@ func (l *Service) chunkOrdinals(ctx context.Context, key, etag string, indexes m
 }
 
 func collectRaw(raw []byte, expected uint32, day, from, to time.Time, actors []uint32, writer string, base uint64, selected *roaring.Bitmap) ([]eventRef, error) {
-	entries, err := codec.ValidateEntries(raw, expected)
-	if err != nil {
-		return nil, err
-	}
 	writerID, err := strconv.ParseUint(writer, 16, 64)
 	if err != nil {
 		return nil, fmt.Errorf("invalid writer ID %q", writer)
 	}
-	refs := make([]eventRef, 0, len(entries))
-	for ordinal, entry := range entries {
-		if selected != nil && !selected.Contains(uint32(ordinal)) {
+	capacity := int(expected)
+	if selected != nil {
+		capacity = int(selected.Count())
+	}
+	refs := make([]eventRef, 0, capacity)
+	var count uint32
+	for len(raw) > 0 {
+		entry, size, err := codec.ValidateEntry(raw)
+		if err != nil {
+			return nil, fmt.Errorf("event %d: %w", count, err)
+		}
+		ordinal := count
+		count++
+		raw = raw[size:]
+		if selected != nil && !selected.Contains(ordinal) {
 			continue
 		}
 		if selected == nil && !containsActors(entry, actors) {
@@ -436,8 +445,10 @@ func collectRaw(raw []byte, expected uint32, day, from, to time.Time, actors []u
 		if eventTime.Before(from) || eventTime.After(to) {
 			continue
 		}
-		position := base + uint64(ordinal)
-		refs = append(refs, eventRef{event: event, millis: eventTime.UnixMilli(), writer: writerID, position: position})
+		refs = append(refs, eventRef{event: event, millis: eventTime.UnixMilli(), writer: writerID, position: base + uint64(ordinal)})
+	}
+	if count != expected {
+		return nil, fmt.Errorf("entry count mismatch: got %d, want %d", count, expected)
 	}
 	return refs, nil
 }
@@ -485,41 +496,60 @@ func (l *Service) discoverManifests(ctx context.Context, day time.Time) ([]*code
 }
 
 func (l *Service) compactMetadata(ctx context.Context, day string) (*codec.CompactMetadata, bool, error) {
+	now := l.config.now().UTC()
 	l.cacheMu.Lock()
 	cached := l.compactMeta[day]
+	missAt, missed := l.compactMiss[day]
 	l.cacheMu.Unlock()
 	if cached != nil {
 		return cached, true, nil
 	}
+	if missed && now.Sub(missAt) < l.config.ChunkInterval {
+		return nil, false, nil
+	}
 	data, err := l.s3Client.Download(ctx, keyOfCompactMeta(day))
 	switch {
 	case s3.IsNoSuchKey(err):
+		l.rememberCompactMiss(day, now)
 		return nil, false, nil
 	case err != nil:
 		return nil, false, err
 	}
 	meta, err := codec.Decode[codec.CompactMetadata](data)
 	if err != nil || codec.ValidateCompact(meta, day) != nil {
+		l.rememberCompactMiss(day, now)
 		return nil, false, nil
 	}
 	index, err := l.s3Client.Stat(ctx, meta.Index.Key)
 	switch {
 	case s3.IsNoSuchKey(err):
+		l.rememberCompactMiss(day, now)
 		return nil, false, nil
 	case err != nil:
 		return nil, false, err
 	case index.Size != meta.Index.Size || index.ETag != meta.Index.ETag:
+		l.rememberCompactMiss(day, now)
 		return nil, false, nil
 	}
 	l.cacheMu.Lock()
 	l.compactMeta[day] = meta
+	delete(l.compactMiss, day)
 	l.cacheMu.Unlock()
 	return meta, true, nil
 }
 
+func (l *Service) rememberCompactMiss(day string, at time.Time) {
+	l.cacheMu.Lock()
+	l.compactMiss[day] = at
+	l.cacheMu.Unlock()
+}
+
 func decodeBitmap(data []byte, entries uint64) (*roaring.Bitmap, error) {
 	bitmap := roaring.New()
-	n, err := bitmap.ReadFrom(bytes.NewReader(data))
+	reader := bitmapReaderPool.Get().(*bytes.Reader)
+	reader.Reset(data)
+	n, err := bitmap.ReadFrom(reader)
+	bitmapReaderPool.Put(reader)
 	if err != nil {
 		return nil, err
 	}
@@ -531,6 +561,8 @@ func decodeBitmap(data []byte, entries uint64) (*roaring.Bitmap, error) {
 	}
 	return bitmap, nil
 }
+
+var bitmapReaderPool = sync.Pool{New: func() any { return new(bytes.Reader) }}
 
 func uniqueActors(actors []uint32) []uint32 {
 	if len(actors) < 2 {

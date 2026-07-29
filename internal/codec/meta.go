@@ -15,7 +15,15 @@ import (
 type Sequence uint64
 
 func (s Sequence) MarshalJSON() ([]byte, error) {
-	return []byte(fmt.Sprintf(`"%020d"`, uint64(s))), nil
+	var buf [22]byte
+	buf[0] = '"'
+	value := uint64(s)
+	for i := 20; i >= 1; i-- {
+		buf[i] = byte('0' + value%10)
+		value /= 10
+	}
+	buf[21] = '"'
+	return append([]byte(nil), buf[:]...), nil
 }
 
 func (s *Sequence) UnmarshalJSON(data []byte) error {

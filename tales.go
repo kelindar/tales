@@ -100,6 +100,7 @@ type Service struct {
 	cacheMu     sync.Mutex
 	discovery   map[string]discoveryCache
 	compactMeta map[string]*codec.CompactMetadata
+	compactMiss map[string]time.Time
 }
 
 // New opens a service for the given S3 bucket and region.
@@ -130,6 +131,7 @@ func New(bucket, region string, opts ...Option) (*Service, error) {
 		commands:    make(chan command, cfg.BufferSize),
 		discovery:   make(map[string]discoveryCache),
 		compactMeta: make(map[string]*codec.CompactMetadata),
+		compactMiss: make(map[string]time.Time),
 	}
 	service.logs.New = func() any { return &logCmd{reply: make(chan error, 1)} }
 	service.worker.Add(1)

@@ -101,7 +101,20 @@ func (c *S3Client) Upload(ctx context.Context, key string, data []byte) (string,
 	return etag, nil
 }
 
+// inlineUploadLimit keeps typical writer chunks on the single-PUT path so we
+// get an ETag without a multipart upload buffer or follow-up HEAD.
+const inlineUploadLimit = 16 << 20
+
 func (c *S3Client) UploadReader(ctx context.Context, key string, reader io.ReaderAt, size int64) (string, error) {
+	if size >= 0 && size <= inlineUploadLimit {
+		buf := make([]byte, size)
+		if size > 0 {
+			if _, err := io.ReadFull(io.NewSectionReader(reader, 0, size), buf); err != nil {
+				return "", ErrS3Operation{Operation: "write", Err: err}
+			}
+		}
+		return c.Upload(ctx, key, buf)
+	}
 	if err := c.bucket.WriteFrom(ctx, c.buildKey(key), reader, size); err != nil {
 		return "", ErrS3Operation{Operation: "write", Err: err}
 	}
