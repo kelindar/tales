@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"time"
 
 	"github.com/kelindar/tales/internal/buffer"
 	"github.com/kelindar/tales/internal/codec"
@@ -24,7 +25,6 @@ type pendingBatch struct {
 	sequence uint64
 	base     uint64
 	chunk    *codec.ChunkEntry
-	err      error
 }
 
 func (l *Service) flushState(ctx context.Context, state *writerState) error {
@@ -38,9 +38,13 @@ func (l *Service) flushState(ctx context.Context, state *writerState) error {
 	}
 
 	day := dayKey(state.buffer.Day())
-	manifest, err := l.downloadManifest(ctx, day, l.config.WriterID)
-	if err != nil {
-		return err
+	manifest := state.manifests[day]
+	if manifest == nil {
+		var err error
+		manifest, err = l.downloadManifest(ctx, day, l.config.WriterID)
+		if err != nil {
+			return err
+		}
 	}
 	batch, err := state.buffer.Take()
 	if err != nil {
@@ -60,12 +64,12 @@ func (l *Service) persistPending(ctx context.Context, state *writerState, manife
 	if manifest == nil {
 		manifest, err = l.downloadManifest(ctx, day, l.config.WriterID)
 		if err != nil {
-			pending.err = err
 			return err
 		}
 	}
 
-	if pending.sequence < uint64(len(manifest.Chunks)) {
+	switch {
+	case pending.sequence < uint64(len(manifest.Chunks)):
 		committed := manifest.Chunks[pending.sequence]
 		if pending.chunk == nil || !reflect.DeepEqual(committed, *pending.chunk) {
 			return fmt.Errorf("writer manifest sequence %d conflicts with pending batch", pending.sequence)
@@ -74,33 +78,34 @@ func (l *Service) persistPending(ctx context.Context, state *writerState, manife
 		state.pending = nil
 		l.invalidateDiscovery(day)
 		return nil
-	}
-	if manifest.NextSequence() != pending.sequence {
+	case manifest.NextSequence() != pending.sequence:
 		return fmt.Errorf("writer manifest advanced unexpectedly")
 	}
 
 	if pending.chunk == nil {
 		chunk, err := l.uploadPendingChunk(ctx, day, pending)
 		if err != nil {
-			pending.err = err
 			return err
 		}
 		pending.chunk = chunk
 	}
-	if err := l.rejectCompactedDay(ctx, day); err != nil {
-		pending.err = err
+	if err := l.rejectCompactedDay(ctx, pending.batch.Day); err != nil {
 		return err
 	}
 
-	next := &codec.Manifest{Day: day, Writer: l.config.WriterID, Chunks: append([]codec.ChunkEntry(nil), manifest.Chunks...)}
+	next := &codec.Manifest{
+		Day:    day,
+		Writer: l.config.WriterID,
+		Chunks: make([]codec.ChunkEntry, len(manifest.Chunks), len(manifest.Chunks)+1),
+	}
+	copy(next.Chunks, manifest.Chunks)
 	next.Chunks = append(next.Chunks, *pending.chunk)
 	data, err := codec.Encode(next)
 	if err != nil {
 		return fmt.Errorf("encode writer manifest: %w", err)
 	}
 	if _, err := l.s3Client.Upload(ctx, keyOfManifest(day, l.config.WriterID), data); err != nil {
-		pending.err = fmt.Errorf("publish writer manifest: %w", err)
-		return pending.err
+		return fmt.Errorf("publish writer manifest: %w", err)
 	}
 	state.manifests[day] = next
 	state.pending = nil
@@ -111,13 +116,19 @@ func (l *Service) persistPending(ctx context.Context, state *writerState, manife
 func (l *Service) uploadPendingChunk(ctx context.Context, day string, pending *pendingBatch) (*codec.ChunkEntry, error) {
 	actors := make(map[uint32]codec.Range, len(pending.batch.Indexes))
 	var offset int64
+	size := len(pending.batch.Data)
 	for _, index := range pending.batch.Indexes {
 		actors[index.Actor] = codec.Range{Offset: offset, Size: int64(len(index.Data))}
 		offset += int64(len(index.Data))
+		size += len(index.Data)
 	}
-	reader := newLogReader(pending.batch.Indexes, pending.batch.Data)
+	payload := make([]byte, 0, size)
+	for _, index := range pending.batch.Indexes {
+		payload = append(payload, index.Data...)
+	}
+	payload = append(payload, pending.batch.Data...)
 	key := keyOfChunk(day, l.config.WriterID, pending.sequence)
-	etag, err := l.s3Client.UploadReader(ctx, key, reader, reader.Size())
+	etag, err := l.s3Client.Upload(ctx, key, payload)
 	if err != nil {
 		return nil, fmt.Errorf("upload writer chunk: %w", err)
 	}
@@ -127,7 +138,7 @@ func (l *Service) uploadPendingChunk(ctx context.Context, day string, pending *p
 		Time:       pending.batch.Time,
 		BitmapSize: offset,
 		Data:       codec.Range{Offset: offset, Size: int64(len(pending.batch.Data))},
-		Size:       reader.Size(),
+		Size:       int64(len(payload)),
 		ETag:       etag,
 		Actors:     actors,
 	}
@@ -155,10 +166,24 @@ func (l *Service) downloadManifest(ctx context.Context, day, writer string) (*co
 	return manifest, nil
 }
 
-func (l *Service) rejectCompactedDay(ctx context.Context, day string) error {
-	data, err := l.s3Client.Download(ctx, keyOfCompactMeta(day))
+func (l *Service) rejectCompactedDay(ctx context.Context, day time.Time) error {
+	dayName := dayKey(day)
+	now := l.config.now().UTC()
+	l.cacheMu.Lock()
+	compacted := l.compactMeta[dayName] != nil
+	missAt, missed := l.compactMiss[dayName]
+	l.cacheMu.Unlock()
+	switch {
+	case compacted:
+		return fmt.Errorf("day %s is already compacted", dayName)
+	case missed && now.Sub(missAt) < l.config.ChunkInterval:
+		return nil
+	}
+
+	data, err := l.s3Client.Download(ctx, keyOfCompactMeta(dayName))
 	switch {
 	case s3.IsNoSuchKey(err):
+		l.rememberCompactMiss(dayName, now)
 		return nil
 	case err != nil:
 		return fmt.Errorf("check compact metadata: %w", err)
@@ -167,19 +192,10 @@ func (l *Service) rejectCompactedDay(ctx context.Context, day string) error {
 	if err != nil {
 		return fmt.Errorf("decode compact metadata: %w", err)
 	}
-	if err := codec.ValidateCompact(meta, day); err != nil {
+	if err := codec.ValidateCompact(meta, dayName); err != nil {
 		return err
 	}
-	return fmt.Errorf("day %s is already compacted", day)
-}
-
-func newLogReader(bitmaps []buffer.Index, logData []byte) *s3.MultiReader {
-	sections := make([][]byte, 0, len(bitmaps)+1)
-	for _, bitmap := range bitmaps {
-		sections = append(sections, bitmap.Data)
-	}
-	sections = append(sections, logData)
-	return s3.NewMultiReader(sections...)
+	return fmt.Errorf("day %s is already compacted", dayName)
 }
 
 func (l *Service) invalidateDiscovery(day string) {

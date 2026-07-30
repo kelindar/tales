@@ -4,6 +4,7 @@
 package tales
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"math"
@@ -28,11 +29,11 @@ type sourceChunk struct {
 
 // Compact commits an immutable merged index for an eligible historical UTC day.
 func (l *Service) Compact(ctx context.Context, value time.Time) error {
-	if ctx == nil {
+	switch {
+	case ctx == nil:
 		return fmt.Errorf("nil context")
-	}
-	if err := ctx.Err(); err != nil {
-		return err
+	case ctx.Err() != nil:
+		return ctx.Err()
 	}
 	if err := l.begin(); err != nil {
 		return err
@@ -55,7 +56,7 @@ func (l *Service) Compact(ctx context.Context, value time.Time) error {
 	if err != nil {
 		return err
 	}
-	chunks, total, err := collectSourceChunks(manifests, dayName)
+	chunks, _, err := collectSourceChunks(manifests, dayName)
 	if err != nil {
 		return err
 	}
@@ -72,7 +73,7 @@ func (l *Service) Compact(ctx context.Context, value time.Time) error {
 	if err := l.composeCompactPayload(ctx, dayName, sources, parts, copied); err != nil {
 		return err
 	}
-	index, actorRanges, err := l.uploadCompactIndex(ctx, dayName, merged, total)
+	index, actorRanges, err := l.uploadCompactIndex(ctx, dayName, merged)
 	if err != nil {
 		return err
 	}
@@ -137,35 +138,27 @@ func (l *Service) composeCompactPayload(ctx context.Context, day string, sources
 	return nil
 }
 
-func (l *Service) uploadCompactIndex(ctx context.Context, day string, merged map[uint32]*roaring.Bitmap, entries uint64) (codec.ObjectRange, map[uint32]codec.Range, error) {
+func (l *Service) uploadCompactIndex(ctx context.Context, day string, merged map[uint32]*roaring.Bitmap) (codec.ObjectRange, map[uint32]codec.Range, error) {
 	actors := make([]uint32, 0, len(merged))
 	for actor := range merged {
 		actors = append(actors, actor)
 	}
 	slices.Sort(actors)
 	ranges := make(map[uint32]codec.Range, len(actors))
-	var data []byte
+	var data bytes.Buffer
 	for _, actor := range actors {
-		bitmap := merged[actor].ToBytes()
-		ranges[actor] = codec.Range{Offset: int64(len(data)), Size: int64(len(bitmap))}
-		data = append(data, bitmap...)
-		if _, err := decodeBitmap(bitmap, entries); err != nil {
-			return codec.ObjectRange{}, nil, fmt.Errorf("validate generated compact index: %w", err)
+		start := data.Len()
+		if _, err := merged[actor].WriteTo(&data); err != nil {
+			return codec.ObjectRange{}, nil, err
 		}
+		ranges[actor] = codec.Range{Offset: int64(start), Size: int64(data.Len() - start)}
 	}
 	key := keyOfCompactIndex(day)
-	etag, err := l.s3Client.Upload(ctx, key, data)
+	etag, err := l.s3Client.Upload(ctx, key, data.Bytes())
 	if err != nil {
 		return codec.ObjectRange{}, nil, err
 	}
-	object, err := l.s3Client.Stat(ctx, key)
-	switch {
-	case err != nil:
-		return codec.ObjectRange{}, nil, err
-	case object.ETag != etag || object.Size != int64(len(data)):
-		return codec.ObjectRange{}, nil, fmt.Errorf("compacted index validation failed")
-	}
-	return codec.ObjectRange{Key: key, ETag: etag, Size: int64(len(data))}, ranges, nil
+	return codec.ObjectRange{Key: key, ETag: etag, Size: int64(data.Len())}, ranges, nil
 }
 
 func (l *Service) validateDirectPayloads(ctx context.Context, sources []codec.CompactSource) error {
@@ -197,6 +190,7 @@ func (l *Service) commitCompactMetadata(ctx context.Context, meta *codec.Compact
 	}
 	l.cacheMu.Lock()
 	l.compactMeta[meta.Day] = meta
+	delete(l.compactMiss, meta.Day)
 	l.cacheMu.Unlock()
 	return nil
 }

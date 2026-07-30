@@ -1,6 +1,7 @@
 package buffer
 
 import (
+	"bytes"
 	"fmt"
 	"sort"
 	"time"
@@ -73,6 +74,7 @@ func (b *Buffer) Take() (*Batch, error) {
 	if b.count == 0 {
 		return nil, nil
 	}
+	raw := append([]byte(nil), b.data...)
 	compressed, err := b.codec.Compress(b.data)
 	if err != nil {
 		return nil, err
@@ -82,13 +84,27 @@ func (b *Buffer) Take() (*Batch, error) {
 		actors = append(actors, actor)
 	}
 	sort.Slice(actors, func(i, j int) bool { return actors[i] < actors[j] })
-	indexes := make([]Index, 0, len(actors))
-	for _, actor := range actors {
-		indexes = append(indexes, Index{Actor: actor, Data: b.index[actor].ToBytes()})
+	var indexBuf bytes.Buffer
+	starts := make([]int, len(actors))
+	for i, actor := range actors {
+		starts[i] = indexBuf.Len()
+		if _, err := b.index[actor].WriteTo(&indexBuf); err != nil {
+			return nil, err
+		}
 	}
-	batch := &Batch{Day: b.day, Raw: b.data, Data: compressed, Indexes: indexes, Entries: uint32(b.count), Time: b.time}
-	b.data = make([]byte, 0, 8<<20)
-	b.index = make(map[uint32]*roaring.Bitmap)
+	blob := indexBuf.Bytes()
+	indexes := make([]Index, len(actors))
+	for i, actor := range actors {
+		start := starts[i]
+		end := len(blob)
+		if i+1 < len(actors) {
+			end = starts[i+1]
+		}
+		indexes[i] = Index{Actor: actor, Data: blob[start:end]}
+	}
+	batch := &Batch{Day: b.day, Raw: raw, Data: compressed, Indexes: indexes, Entries: uint32(b.count), Time: b.time}
+	b.data = b.data[:0]
+	clear(b.index)
 	b.count = 0
 	b.day = time.Time{}
 	b.time = [2]uint32{}
