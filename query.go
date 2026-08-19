@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kelindar/async"
 	"github.com/kelindar/roaring"
 	"github.com/kelindar/tales/internal/codec"
 	"github.com/kelindar/tales/internal/s3"
@@ -493,13 +494,20 @@ func (l *Service) discoverManifests(ctx context.Context, day time.Time) ([]*code
 	}
 	slices.Sort(writers)
 	writers = slices.Compact(writers)
-	manifests := make([]*codec.Manifest, 0, len(writers))
-	for _, writer := range writers {
-		manifest, err := l.downloadManifest(ctx, key, writer)
-		if err != nil {
-			return nil, err
-		}
-		manifests = append(manifests, manifest)
+	manifests := make([]*codec.Manifest, len(writers))
+	tasks := make([]async.Task[struct{}], len(writers))
+	errs := make([]error, len(writers))
+	for i, writer := range writers {
+		tasks[i] = async.NewTask(func(taskCtx context.Context) (struct{}, error) {
+			manifests[i], errs[i] = l.downloadManifest(taskCtx, key, writer)
+			return struct{}{}, nil
+		})
+	}
+	if err := async.InvokeAll(ctx, 8, tasks).Wait(); err != nil {
+		return nil, err
+	}
+	if err := errors.Join(errs...); err != nil {
+		return nil, err
 	}
 	l.cacheMu.Lock()
 	l.discovery[key] = discoveryCache{at: now, manifests: manifests}
