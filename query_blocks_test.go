@@ -225,16 +225,30 @@ func TestSelectiveBlocks(t *testing.T) {
 }
 
 func BenchmarkBlockReads(b *testing.B) {
+	benchmarkPayload(b, 120, 60_000, true)
+}
+
+func BenchmarkSmallBlocks(b *testing.B) {
+	benchmarkPayload(b, 12000, 600, false)
+}
+
+func benchmarkPayload(b *testing.B, count, size int, random bool) {
 	server := s3mock.New("events", "us-east-1")
 	defer server.Close()
 	service := testService(b, server, "bench-blocks", "reader")
 	defer service.Close()
 	day := dayOf(time.Now())
-	buf := buffer.New(120, service.codec)
-	value := make([]byte, 60_000)
-	for i := 0; i < 120; i++ {
-		_, err := rand.Read(value)
-		require.NoError(b, err)
+	buf := buffer.New(count, service.codec)
+	value := make([]byte, size)
+	const record = "level=info service=tales action=append actor=123 status=ok "
+	for i := range value {
+		value[i] = record[i%len(record)]
+	}
+	for i := 0; i < count; i++ {
+		if random {
+			_, err := rand.Read(value)
+			require.NoError(b, err)
+		}
 		entry, err := codec.NewLogEntry(uint32(i), string(value), []uint32{1})
 		require.NoError(b, err)
 		require.NoError(b, buf.Add(day, entry))
@@ -243,11 +257,16 @@ func BenchmarkBlockReads(b *testing.B) {
 	require.NoError(b, err)
 	whole, err := service.codec.Compress(batch.Raw)
 	require.NoError(b, err)
-	for _, density := range []string{"sparse", "dense"} {
+	for _, density := range []string{"sparse", "dense", "fragmented"} {
 		selected := roaring.New()
 		for i := uint32(0); i < batch.Entries; i++ {
-			if density == "dense" || i == 0 || i == batch.Entries-1 {
+			if density == "dense" || density == "sparse" && (i == 0 || i == batch.Entries-1) {
 				selected.Set(i)
+			}
+		}
+		if density == "fragmented" {
+			for i := 0; i < len(batch.Blocks); i += 2 {
+				selected.Set(batch.Blocks[i].First)
 			}
 		}
 		for _, format := range []string{"whole", "blocks"} {

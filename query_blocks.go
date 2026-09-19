@@ -24,7 +24,7 @@ func (l *Service) queryPayload(ctx context.Context, payload codec.ObjectRange, b
 		wanted[index] = true
 		return true
 	})
-	var refs []eventRef
+	refs := make([]eventRef, 0, min(int(entries), selected.Count()))
 	for i := 0; i < len(blocks); {
 		if !wanted[i] {
 			i++
@@ -48,11 +48,10 @@ func (l *Service) queryPayload(ctx context.Context, payload codec.ObjectRange, b
 			if err != nil {
 				return nil, fmt.Errorf("decompress payload block: %w", err)
 			}
-			found, err := collectFrames(raw, block.Entries, block.First, day, from, to, actors, writer, base, selected)
+			refs, err = collectFrames(refs, raw, block.Entries, block.First, day, from, to, actors, writer, base, selected)
 			if err != nil {
 				return nil, err
 			}
-			refs = append(refs, found...)
 		}
 		i = end
 	}

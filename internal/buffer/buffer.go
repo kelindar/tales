@@ -135,12 +135,9 @@ func (b *Buffer) compress() ([]byte, []codec.Block, error) {
 			end += size
 			count++
 		}
-		frame, err := b.codec.Compress(b.data[start:end])
-		if err != nil {
-			return nil, nil, err
-		}
-		blocks = append(blocks, codec.Block{First: first, Entries: count, Offset: int64(len(data)), Size: int64(len(frame))})
-		data = append(data, frame...)
+		offset := len(data)
+		data = b.codec.Append(data, b.data[start:end])
+		blocks = append(blocks, codec.Block{First: first, Entries: count, Offset: int64(offset), Size: int64(len(data) - offset)})
 		first += count
 		start = end
 	}

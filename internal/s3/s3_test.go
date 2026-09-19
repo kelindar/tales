@@ -4,16 +4,72 @@
 package s3
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"strings"
 	"testing"
+	"testing/iotest"
 
 	s3lib "github.com/kelindar/s3"
 	s3mock "github.com/kelindar/s3/mock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestReadRange(t *testing.T) {
+	failure := errors.New("read failed")
+	for _, test := range []struct {
+		name   string
+		reader io.Reader
+		size   int64
+		want   string
+		err    error
+	}{
+		{"exact", strings.NewReader("abc"), 3, "abc", nil},
+		{"empty", strings.NewReader(""), 0, "", nil},
+		{"short", strings.NewReader("ab"), 3, "", io.ErrUnexpectedEOF},
+		{"missing", strings.NewReader(""), 3, "", io.ErrUnexpectedEOF},
+		{"excess", strings.NewReader("abcd"), 3, "", io.ErrUnexpectedEOF},
+		{"unexpected", strings.NewReader("a"), 0, "", io.ErrUnexpectedEOF},
+		{"failure", iotest.ErrReader(failure), 3, "", failure},
+		{"trailing failure", io.MultiReader(strings.NewReader("abc"), iotest.ErrReader(failure)), 3, "", failure},
+		{"fragmented", iotest.OneByteReader(strings.NewReader("abc")), 3, "abc", nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := readRange(test.reader, test.size)
+			assert.ErrorIs(t, err, test.err)
+			assert.Equal(t, test.want, string(got))
+		})
+	}
+	_, err := readRange(strings.NewReader(""), -1)
+	assert.Error(t, err)
+}
+
+func BenchmarkRangeRead(b *testing.B) {
+	data := bytes.Repeat([]byte("x"), 7_200_000)
+	for _, exact := range []bool{false, true} {
+		b.Run(fmt.Sprint(exact), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				reader := bytes.NewReader(data)
+				var got []byte
+				var err error
+				if exact {
+					got, err = readRange(reader, int64(len(data)))
+				} else {
+					got, err = io.ReadAll(reader)
+				}
+				if err != nil || len(got) != len(data) {
+					b.Fatal("invalid range", err)
+				}
+			}
+		})
+	}
+}
 
 func TestClient(t *testing.T) {
 	tests := map[string]func(*testing.T){

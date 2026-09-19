@@ -5,6 +5,7 @@ package codec
 
 import (
 	"bytes"
+	"crypto/rand"
 	"errors"
 	"strings"
 	"testing"
@@ -12,6 +13,41 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func BenchmarkFrameAppend(b *testing.B) {
+	c, err := NewCodec()
+	require.NoError(b, err)
+	defer c.Close()
+	data := make([]byte, 256<<10)
+	_, err = rand.Read(data)
+	require.NoError(b, err)
+	for _, direct := range []bool{false, true} {
+		name := "copy"
+		if direct {
+			name = "append"
+		}
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				var dst []byte
+				for j := 0; j < 30; j++ {
+					if direct {
+						dst = c.Append(dst, data)
+					} else {
+						frame, err := c.Compress(data)
+						if err != nil {
+							b.Fatal(err)
+						}
+						dst = append(dst, frame...)
+					}
+				}
+				if len(dst) == 0 {
+					b.Fatal("empty payload")
+				}
+			}
+		})
+	}
+}
 
 func TestCodecCreation(t *testing.T) {
 	t.Run("NewCodec", func(t *testing.T) {
@@ -41,6 +77,26 @@ func TestCodecCreation(t *testing.T) {
 		assert.NotSame(t, codec1.encoder, codec2.encoder)
 		assert.NotSame(t, codec1.decoder, codec2.decoder)
 	})
+}
+
+func TestAppendFrames(t *testing.T) {
+	c, err := NewCodec()
+	require.NoError(t, err)
+	defer c.Close()
+	for _, capacity := range []int{0, 4096} {
+		dst := append(make([]byte, 0, capacity), "prefix"...)
+		for _, input := range []string{"first frame", "second frame"} {
+			start := len(dst)
+			dst = c.Append(dst, []byte(input))
+			decoded, err := c.Decompress(dst[start:])
+			require.NoError(t, err)
+			assert.Equal(t, input, string(decoded))
+			assert.Equal(t, "prefix", string(dst[:6]))
+		}
+		decoded, err := c.Decompress(dst[6:])
+		require.NoError(t, err)
+		assert.Equal(t, "first framesecond frame", string(decoded))
+	}
 }
 
 func TestCodecCompression(t *testing.T) {

@@ -413,19 +413,18 @@ func (l *Service) chunkOrdinals(ctx context.Context, key, etag string, indexes m
 }
 
 func collectRaw(raw []byte, expected uint32, day, from, to time.Time, actors []uint32, writer string, base uint64, selected *roaring.Bitmap) ([]eventRef, error) {
-	return collectFrames(raw, expected, 0, day, from, to, actors, writer, base, selected)
-}
-
-func collectFrames(raw []byte, expected, first uint32, day, from, to time.Time, actors []uint32, writer string, base uint64, selected *roaring.Bitmap) ([]eventRef, error) {
-	writerID, err := strconv.ParseUint(writer, 16, 64)
-	if err != nil {
-		return nil, fmt.Errorf("invalid writer ID %q", writer)
-	}
 	capacity := int(expected)
 	if selected != nil {
 		capacity = min(capacity, int(selected.Count()))
 	}
-	refs := make([]eventRef, 0, capacity)
+	return collectFrames(make([]eventRef, 0, capacity), raw, expected, 0, day, from, to, actors, writer, base, selected)
+}
+
+func collectFrames(refs []eventRef, raw []byte, expected, first uint32, day, from, to time.Time, actors []uint32, writer string, base uint64, selected *roaring.Bitmap) ([]eventRef, error) {
+	writerID, err := strconv.ParseUint(writer, 16, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid writer ID %q", writer)
+	}
 	var count uint32
 	for len(raw) > 0 {
 		if count >= expected {
