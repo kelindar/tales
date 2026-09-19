@@ -200,10 +200,10 @@ type Block struct {
 
 // ValidateBlocks accepts the original single-frame format or a complete v1 directory.
 func ValidateBlocks(version uint8, blocks []Block, entries uint32, size int64) error {
-	if version == 0 && len(blocks) == 0 {
+	switch {
+	case version == 0 && len(blocks) == 0:
 		return nil
-	}
-	if version != 1 || len(blocks) == 0 {
+	case version != 1 || len(blocks) == 0:
 		return fmt.Errorf("unsupported block format %d", version)
 	}
 	var ordinal uint64

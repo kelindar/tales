@@ -438,10 +438,10 @@ func collectFrames(raw []byte, expected, first uint32, day, from, to time.Time, 
 		ordinal := first + count
 		count++
 		raw = raw[size:]
-		if selected != nil && !selected.Contains(ordinal) {
+		switch {
+		case selected != nil && !selected.Contains(ordinal):
 			continue
-		}
-		if selected == nil && !containsActors(entry, actors) {
+		case selected == nil && !containsActors(entry, actors):
 			continue
 		}
 		event := codec.NewEvent(day, entry)

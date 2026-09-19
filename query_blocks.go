@@ -36,10 +36,10 @@ func (l *Service) queryPayload(ctx context.Context, payload codec.ObjectRange, b
 		}
 		last := blocks[end-1]
 		data, err := l.s3Client.DownloadRange(ctx, payload.Key, payload.ETag, payload.Offset+blocks[i].Offset, last.Offset+last.Size-blocks[i].Offset)
-		if err != nil {
+		switch {
+		case err != nil:
 			return nil, err
-		}
-		if int64(len(data)) != last.Offset+last.Size-blocks[i].Offset {
+		case int64(len(data)) != last.Offset+last.Size-blocks[i].Offset:
 			return nil, fmt.Errorf("read payload blocks: %w", io.ErrUnexpectedEOF)
 		}
 		for _, block := range blocks[i:end] {
