@@ -36,8 +36,13 @@ func NewCodec() (*Codec, error) {
 
 // Compress compresses data using ZSTD compression.
 func (c *Codec) Compress(data []byte) ([]byte, error) {
-	compressed := c.encoder.EncodeAll(data, make([]byte, 0, len(data)))
-	return compressed, nil
+	return c.Append(make([]byte, 0, len(data)), data), nil
+}
+
+// Append appends an independent zstd frame to dst. The caller owns the returned
+// slice, which may reuse dst's backing array. Data must not overlap dst.
+func (c *Codec) Append(dst, data []byte) []byte {
+	return c.encoder.EncodeAll(data, dst)
 }
 
 // Decompress decompresses ZSTD compressed data.

@@ -4,8 +4,43 @@ import (
 	"math"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestBlockDirectory(t *testing.T) {
+	valid := []Block{{First: 0, Entries: 2, Offset: 0, Size: 10}, {First: 2, Entries: 1, Offset: 10, Size: 5}}
+	// This fixed wire fixture detects accidental field-name or encoding changes.
+	const fixture = `[{"first":0,"entries":2,"offset":0,"size":10},{"first":2,"entries":1,"offset":10,"size":5}]`
+	decoded, err := Decode[[]Block]([]byte(fixture))
+	require.NoError(t, err)
+	assert.Equal(t, valid, *decoded)
+	encoded, err := Encode(valid)
+	require.NoError(t, err)
+	assert.Equal(t, fixture, string(encoded))
+	assert.NoError(t, ValidateBlocks(1, valid, 3, 15))
+	assert.NoError(t, ValidateBlocks(0, nil, 3, 15))
+	for _, test := range []struct {
+		name    string
+		version uint8
+		blocks  []Block
+		entries uint32
+		size    int64
+	}{
+		{"unknown version", 2, valid, 3, 15},
+		{"missing directory", 1, nil, 3, 15},
+		{"legacy directory", 0, valid, 3, 15},
+		{"count mismatch", 1, valid, 4, 15},
+		{"trailing bytes", 1, valid, 3, 16},
+		{"out of bounds", 1, valid, 3, 14},
+		{"ordinal gap", 1, []Block{{First: 1, Entries: 3, Size: 15}}, 3, 15},
+		{"negative size", 1, []Block{{Entries: 3, Size: -1}}, 3, 15},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Error(t, ValidateBlocks(test.version, test.blocks, test.entries, test.size))
+		})
+	}
+}
 
 func TestManifestRoundTrip(t *testing.T) {
 	manifest := &Manifest{Day: "2026-07-19", Writer: "0123456789abcdef", Chunks: []ChunkEntry{{

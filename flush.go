@@ -133,6 +133,8 @@ func (l *Service) uploadPendingChunk(ctx context.Context, day string, pending *p
 		return nil, fmt.Errorf("upload writer chunk: %w", err)
 	}
 	chunk := &codec.ChunkEntry{
+		Version:    1,
+		Blocks:     pending.batch.Blocks,
 		Sequence:   codec.Sequence(pending.sequence),
 		Entries:    pending.batch.Entries,
 		Time:       pending.batch.Time,

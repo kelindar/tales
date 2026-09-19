@@ -333,15 +333,7 @@ func (l *Service) queryWriterChunk(ctx context.Context, snapshot querySnapshot, 
 	if err != nil || selected == nil || selected.Count() == 0 {
 		return nil, err
 	}
-	compressed, err := l.s3Client.DownloadRange(ctx, key, chunk.ETag, chunk.Data.Offset, chunk.Data.Size)
-	if err != nil {
-		return nil, err
-	}
-	raw, err := l.codec.Decompress(compressed)
-	if err != nil {
-		return nil, fmt.Errorf("decompress writer chunk: %w", err)
-	}
-	return collectRaw(raw, chunk.Entries, day, from, to, actors, writer, base, selected)
+	return l.queryPayload(ctx, codec.ObjectRange{Key: key, ETag: chunk.ETag, Offset: chunk.Data.Offset, Size: chunk.Data.Size}, chunk.Blocks, chunk.Entries, day, from, to, actors, writer, base, selected)
 }
 
 func (l *Service) queryCompactDay(ctx context.Context, day, from, to time.Time, actors []uint32, meta *codec.CompactMetadata) ([]eventRef, error) {
@@ -380,15 +372,7 @@ func (l *Service) queryCompactDay(ctx context.Context, day, from, to time.Time, 
 			base += uint64(source.Entries)
 			continue
 		}
-		compressed, err := l.s3Client.DownloadRange(ctx, source.Payload.Key, source.Payload.ETag, source.Payload.Offset, source.Payload.Size)
-		if err != nil {
-			return nil, err
-		}
-		raw, err := l.codec.Decompress(compressed)
-		if err != nil {
-			return nil, fmt.Errorf("decompress compact source: %w", err)
-		}
-		chunkRefs, err := collectRaw(raw, source.Entries, day, from, to, actors, source.Writer, base, local)
+		chunkRefs, err := l.queryPayload(ctx, source.Payload, source.Blocks, source.Entries, day, from, to, actors, source.Writer, base, local)
 		if err != nil {
 			return nil, err
 		}
@@ -429,28 +413,34 @@ func (l *Service) chunkOrdinals(ctx context.Context, key, etag string, indexes m
 }
 
 func collectRaw(raw []byte, expected uint32, day, from, to time.Time, actors []uint32, writer string, base uint64, selected *roaring.Bitmap) ([]eventRef, error) {
+	capacity := int(expected)
+	if selected != nil {
+		capacity = min(capacity, int(selected.Count()))
+	}
+	return collectFrames(make([]eventRef, 0, capacity), raw, expected, 0, day, from, to, actors, writer, base, selected)
+}
+
+func collectFrames(refs []eventRef, raw []byte, expected, first uint32, day, from, to time.Time, actors []uint32, writer string, base uint64, selected *roaring.Bitmap) ([]eventRef, error) {
 	writerID, err := strconv.ParseUint(writer, 16, 64)
 	if err != nil {
 		return nil, fmt.Errorf("invalid writer ID %q", writer)
 	}
-	capacity := int(expected)
-	if selected != nil {
-		capacity = int(selected.Count())
-	}
-	refs := make([]eventRef, 0, capacity)
 	var count uint32
 	for len(raw) > 0 {
+		if count >= expected {
+			return nil, fmt.Errorf("entry count exceeds expected %d", expected)
+		}
 		entry, size, err := codec.ValidateEntry(raw)
 		if err != nil {
 			return nil, fmt.Errorf("event %d: %w", count, err)
 		}
-		ordinal := count
+		ordinal := first + count
 		count++
 		raw = raw[size:]
-		if selected != nil && !selected.Contains(ordinal) {
+		switch {
+		case selected != nil && !selected.Contains(ordinal):
 			continue
-		}
-		if selected == nil && !containsActors(entry, actors) {
+		case selected == nil && !containsActors(entry, actors):
 			continue
 		}
 		event := codec.NewEvent(day, entry)

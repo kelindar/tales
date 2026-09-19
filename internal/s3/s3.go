@@ -128,7 +128,7 @@ func (c *S3Client) DownloadRange(ctx context.Context, key, etag string, offset, 
 		return nil, ErrS3Operation{Operation: "range", Err: err}
 	}
 	defer reader.Close()
-	data, err := io.ReadAll(reader)
+	data, err := readRange(reader, size)
 	if err == nil {
 		err = ctx.Err()
 	}
@@ -137,6 +137,29 @@ func (c *S3Client) DownloadRange(ctx context.Context, key, etag string, offset, 
 		return nil, ErrS3Operation{Operation: "range", Err: err}
 	case int64(len(data)) != size:
 		return nil, ErrS3Operation{Operation: "range", Err: io.ErrUnexpectedEOF}
+	}
+	return data, nil
+}
+
+// readRange allocates once for the advertised range and rejects excess bytes.
+func readRange(reader io.Reader, size int64) ([]byte, error) {
+	if size < 0 || uint64(size) > uint64(^uint(0)>>1) {
+		return nil, fmt.Errorf("invalid range size %d", size)
+	}
+	data := make([]byte, int(size))
+	if _, err := io.ReadFull(reader, data); err != nil {
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
+		return nil, err
+	}
+	var extra [1]byte
+	n, err := io.ReadFull(reader, extra[:])
+	switch {
+	case n != 0:
+		return nil, io.ErrUnexpectedEOF
+	case err != io.EOF:
+		return nil, err
 	}
 	return data, nil
 }

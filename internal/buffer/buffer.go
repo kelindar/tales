@@ -62,6 +62,7 @@ type Index struct {
 }
 
 type Batch struct {
+	Blocks  []codec.Block
 	Day     time.Time
 	Raw     []byte
 	Data    []byte
@@ -75,7 +76,7 @@ func (b *Buffer) Take() (*Batch, error) {
 		return nil, nil
 	}
 	raw := append([]byte(nil), b.data...)
-	compressed, err := b.codec.Compress(b.data)
+	compressed, blocks, err := b.compress()
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +103,7 @@ func (b *Buffer) Take() (*Batch, error) {
 		}
 		indexes[i] = Index{Actor: actor, Data: blob[start:end]}
 	}
-	batch := &Batch{Day: b.day, Raw: raw, Data: compressed, Indexes: indexes, Entries: uint32(b.count), Time: b.time}
+	batch := &Batch{Day: b.day, Raw: raw, Data: compressed, Blocks: blocks, Indexes: indexes, Entries: uint32(b.count), Time: b.time}
 	b.data = b.data[:0]
 	clear(b.index)
 	b.count = 0
@@ -113,4 +114,32 @@ func (b *Buffer) Take() (*Batch, error) {
 
 func (b *Buffer) Snapshot() (time.Time, []byte, uint32) {
 	return b.day, append([]byte(nil), b.data...), uint32(b.count)
+}
+
+func (b *Buffer) compress() ([]byte, []codec.Block, error) {
+	const target = 256 << 10
+	var data []byte
+	var blocks []codec.Block
+	var first uint32
+	for start := 0; start < len(b.data); {
+		end := start
+		var count uint32
+		for end < len(b.data) {
+			_, size, err := codec.ValidateEntry(b.data[end:])
+			if err != nil {
+				return nil, nil, err
+			}
+			if end > start && end-start+size > target {
+				break
+			}
+			end += size
+			count++
+		}
+		offset := len(data)
+		data = b.codec.Append(data, b.data[start:end])
+		blocks = append(blocks, codec.Block{First: first, Entries: count, Offset: int64(offset), Size: int64(len(data) - offset)})
+		first += count
+		start = end
+	}
+	return data, blocks, nil
 }
