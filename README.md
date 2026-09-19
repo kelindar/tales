@@ -128,7 +128,22 @@ YYYY-MM-DD/compact/data.log
 YYYY-MM-DD/compact/metadata.json
 ```
 
-Chunk sequences are zero-based and use 20 decimal digits. This format has no legacy decoder or migration path.
+Chunk sequences are zero-based and use 20 decimal digits. New chunks use payload
+format version 1: actor bitmaps followed by independently compressed zstd frames,
+each containing at most 256 KiB of raw event frames. Events never cross a block
+boundary. The manifest stores `version: 1` and a `blocks` directory with each
+block's first event ordinal, entry count, compressed offset, and compressed size.
+Offsets are relative to the event payload, after the actor bitmaps.
+
+Queries intersect actor bitmaps, fetch only matching blocks, and combine adjacent
+blocks into one range request. Compaction preserves this directory and the
+compressed frames, including when it copies payloads server-side. Event encoding,
+ordering, and cursors are unchanged.
+
+Readers still accept original chunks without a version or block directory as a
+single compressed payload. Unknown versions and incomplete directories are
+rejected. Metadata remains JSON; changing the serializer is a separate format
+decision.
 
 ## Installation
 

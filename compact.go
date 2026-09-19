@@ -97,6 +97,7 @@ func buildCompactSources(chunks []sourceChunk, partLimit int) ([]codec.CompactSo
 	copied := make([]int, 0, cap(parts))
 	for i, source := range chunks {
 		sources[i] = codec.CompactSource{
+			Version: source.chunk.Version, Blocks: source.chunk.Blocks,
 			Writer: source.writer, Sequence: source.chunk.Sequence, Base: source.base,
 			Entries: source.chunk.Entries, Time: source.chunk.Time,
 			Payload: codec.ObjectRange{Key: source.key, ETag: source.chunk.ETag, Offset: source.chunk.Data.Offset, Size: source.chunk.Data.Size},

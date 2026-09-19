@@ -46,6 +46,8 @@ type Range struct {
 
 // ChunkEntry describes one immutable writer chunk.
 type ChunkEntry struct {
+	Version    uint8            `json:"version,omitempty"`
+	Blocks     []Block          `json:"blocks,omitempty"`
 	Sequence   Sequence         `json:"sequence"`
 	Entries    uint32           `json:"entries"`
 	Time       [2]uint32        `json:"time"`
@@ -82,6 +84,8 @@ type ObjectRange struct {
 }
 
 type CompactSource struct {
+	Version  uint8       `json:"version,omitempty"`
+	Blocks   []Block     `json:"blocks,omitempty"`
 	Writer   string      `json:"writer"`
 	Sequence Sequence    `json:"sequence"`
 	Base     uint64      `json:"base"`
@@ -141,7 +145,7 @@ func ValidateChunk(chunk ChunkEntry) error {
 	if err := validateActorRanges(chunk.Actors, chunk.BitmapSize); err != nil {
 		return err
 	}
-	return nil
+	return ValidateBlocks(chunk.Version, chunk.Blocks, chunk.Entries, chunk.Data.Size)
 }
 
 func ValidateCompact(meta *CompactMetadata, day string) error {
@@ -182,6 +186,37 @@ func validateCompactSource(sources []CompactSource, i int, base uint64) error {
 		return fmt.Errorf("compact sources are not ordered")
 	case !source.Copied && source.Payload.Key != source.Source:
 		return fmt.Errorf("direct compact source %d has mismatched payload", i)
+	}
+	return ValidateBlocks(source.Version, source.Blocks, source.Entries, source.Payload.Size)
+}
+
+// Block locates an independent zstd frame relative to the event payload.
+type Block struct {
+	First   uint32 `json:"first"`
+	Entries uint32 `json:"entries"`
+	Offset  int64  `json:"offset"`
+	Size    int64  `json:"size"`
+}
+
+// ValidateBlocks accepts the original single-frame format or a complete v1 directory.
+func ValidateBlocks(version uint8, blocks []Block, entries uint32, size int64) error {
+	if version == 0 && len(blocks) == 0 {
+		return nil
+	}
+	if version != 1 || len(blocks) == 0 {
+		return fmt.Errorf("unsupported block format %d", version)
+	}
+	var ordinal uint64
+	var offset int64
+	for _, block := range blocks {
+		if uint64(block.First) != ordinal || block.Entries == 0 || block.Offset != offset || block.Size <= 0 || block.Size > size-offset {
+			return fmt.Errorf("invalid block directory")
+		}
+		ordinal += uint64(block.Entries)
+		offset += block.Size
+	}
+	if ordinal != uint64(entries) || offset != size {
+		return fmt.Errorf("incomplete block directory")
 	}
 	return nil
 }

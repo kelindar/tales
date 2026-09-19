@@ -2,11 +2,13 @@ package buffer
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/kelindar/roaring"
 	"github.com/kelindar/tales/internal/codec"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -46,6 +48,58 @@ func TestBatchSnapshot(t *testing.T) {
 	require.NoError(t, err)
 	_, err = codec.ValidateEntries(raw, 2)
 	require.NoError(t, err)
+}
+
+func TestBlockBoundaries(t *testing.T) {
+	c, err := codec.NewCodec()
+	require.NoError(t, err)
+	defer c.Close()
+	day := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+	for _, sizes := range [][]int{{65535}, {65535, 65535, 65535, 65535, 12}, {65535, 65535, 65535, 65535, 12, 12}} {
+		buf := New(len(sizes), c)
+		for _, size := range sizes {
+			entry, err := codec.NewLogEntry(0, strings.Repeat("x", size-12), []uint32{1})
+			require.NoError(t, err)
+			require.NoError(t, buf.Add(day, entry))
+		}
+		batch, err := buf.Take()
+		require.NoError(t, err)
+		require.NoError(t, codec.ValidateBlocks(1, batch.Blocks, batch.Entries, int64(len(batch.Data))))
+		var rebuilt []byte
+		for _, block := range batch.Blocks {
+			raw, err := c.Decompress(batch.Data[block.Offset : block.Offset+block.Size])
+			require.NoError(t, err)
+			assert.LessOrEqual(t, len(raw), 256<<10)
+			_, err = codec.ValidateEntries(raw, block.Entries)
+			require.NoError(t, err)
+			rebuilt = append(rebuilt, raw...)
+		}
+		assert.Equal(t, batch.Raw, rebuilt)
+		empty, err := buf.Take()
+		require.NoError(t, err)
+		assert.Nil(t, empty)
+	}
+
+	t.Run("exact fit", func(t *testing.T) {
+		buf := New(6, c)
+		for _, size := range []int{65532, 65532, 65532, 65532, 16, 12} {
+			entry, err := codec.NewLogEntry(0, strings.Repeat("x", size-12), []uint32{1})
+			require.NoError(t, err)
+			require.NoError(t, buf.Add(day, entry))
+		}
+		batch, err := buf.Take()
+		require.NoError(t, err)
+		require.Len(t, batch.Blocks, 2)
+		assert.Equal(t, uint32(5), batch.Blocks[0].Entries)
+		assert.Equal(t, uint32(5), batch.Blocks[1].First)
+	})
+
+	t.Run("malformed frame", func(t *testing.T) {
+		buf := New(1, c)
+		buf.data = []byte{1}
+		_, _, err := buf.compress()
+		assert.Error(t, err)
+	})
 }
 
 func TestBufferDayGuard(t *testing.T) {
