@@ -54,17 +54,13 @@ func BenchmarkSync(b *testing.B) {
 
 type syncFixture struct {
 	server       *mock.Server
-	history      int
 	day          string
-	writer       string
-	chunk        codec.ChunkEntry
-	chunkData    []byte
 	manifestKey  string
 	manifestData []byte
 }
 
 func newSyncFixture(b *testing.B, server *mock.Server, history int) *syncFixture {
-	fixture := &syncFixture{server: server, history: history}
+	fixture := &syncFixture{server: server}
 	logger := newSyncLogger(b, server)
 	require.NoError(b, logger.Log(syncText, 1))
 	require.NoError(b, logger.Sync(context.Background()))
@@ -84,45 +80,40 @@ func newSyncFixture(b *testing.B, server *mock.Server, history int) *syncFixture
 	require.NoError(b, err)
 	require.Len(b, manifest.Chunks, 1)
 
-	fixture.writer = manifest.Writer
-	fixture.chunk = manifest.Chunks[0]
 	fixture.day = manifest.Day
-	chunkKey := syncChunkKey(fixture.day, fixture.writer, 0)
+	fixture.manifestKey = manifestKey
+	writer := manifest.Writer
+	chunk := manifest.Chunks[0]
+	chunkKey := syncChunkKey(fixture.day, writer, 0)
 	chunkObject, ok := server.GetObject(chunkKey)
 	require.True(b, ok)
-	fixture.chunkData = bytes.Clone(chunkObject.Content)
-	fixture.manifestKey = manifestKey
+	chunkData := bytes.Clone(chunkObject.Content)
 	if history == 0 {
 		server.Clear()
 		return fixture
 	}
 
-	fixture.seedHistory(b)
+	seededManifest := &codec.Manifest{Day: fixture.day, Writer: writer, Chunks: make([]codec.ChunkEntry, history)}
+	for sequence := range history {
+		entry := chunk
+		entry.Sequence = codec.Sequence(sequence)
+		entry.ETag = server.PutObject(syncChunkKey(fixture.day, writer, uint64(sequence)), chunkData)
+		seededManifest.Chunks[sequence] = entry
+	}
+	require.NoError(b, codec.ValidateManifest(seededManifest, fixture.day, writer))
+	fixture.manifestData, err = codec.Encode(seededManifest)
+	require.NoError(b, err)
+	server.PutObject(fixture.manifestKey, fixture.manifestData)
 	return fixture
 }
 
 func (f *syncFixture) reset(b *testing.B) {
 	require.Equal(b, f.day, utcDay(time.Now()).Format("2006-01-02"), "benchmark crossed a UTC day; rerun with a fresh fixture")
-	if f.history == 0 {
+	if len(f.manifestData) == 0 {
 		f.server.DeleteObject(f.manifestKey)
 		return
 	}
 	f.server.PutObject(f.manifestKey, f.manifestData)
-}
-
-func (f *syncFixture) seedHistory(b *testing.B) {
-	manifest := &codec.Manifest{Day: f.day, Writer: f.writer, Chunks: make([]codec.ChunkEntry, f.history)}
-	for sequence := range f.history {
-		chunk := f.chunk
-		chunk.Sequence = codec.Sequence(sequence)
-		chunk.ETag = f.server.PutObject(syncChunkKey(f.day, f.writer, uint64(sequence)), f.chunkData)
-		manifest.Chunks[sequence] = chunk
-	}
-	require.NoError(b, codec.ValidateManifest(manifest, f.day, f.writer))
-	data, err := codec.Encode(manifest)
-	require.NoError(b, err)
-	f.manifestData = data
-	f.server.PutObject(f.manifestKey, data)
 }
 
 func newSyncLogger(b *testing.B, server *mock.Server) *tales.Service {

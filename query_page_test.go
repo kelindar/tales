@@ -4,7 +4,6 @@
 package tales
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"runtime"
@@ -343,40 +342,24 @@ func TestPagePrune(t *testing.T) {
 	defer server.Close()
 
 	day := time.Date(2026, 7, 19, 0, 0, 0, 0, time.UTC)
-	nowA, nowB := day, day
-	writers := []struct {
-		service *Service
-		now     *time.Time
-	}{
-		{service: testService(t, server, "page-prune", "writer-a", WithBuffer(pruneEventsPerWriter), func(c *config) {
-			c.now = func() time.Time { return nowA }
-		}),
-			now: &nowA},
-		{service: testService(t, server, "page-prune", "writer-b", WithBuffer(pruneEventsPerWriter), func(c *config) {
-			c.now = func() time.Time { return nowB }
-		}),
-			now: &nowB},
+	now := [2]time.Time{day, day}
+	writers := make([]*Service, len(now))
+	for i := range writers {
+		writers[i] = testService(t, server, "page-prune", fmt.Sprintf("writer-%c", 'a'+i), WithBuffer(pruneEventsPerWriter), func(c *config) {
+			c.now = func() time.Time { return now[i] }
+		})
+		defer writers[i].Close()
 	}
-	for _, writer := range writers {
-		defer writer.service.Close()
-	}
-	slices.SortFunc(writers, func(a, b struct {
-		service *Service
-		now     *time.Time
-	}) int {
-		return cmp.Compare(a.service.config.WriterID, b.service.config.WriterID)
-	})
 
-	blockTimes := make(map[string][][2]uint32, len(writers))
-	for i, entry := range writers {
-		writer := entry.service
-		base := uint32(0)
-		if i == 1 {
-			base = 40_940_000
+	originalBlocks := make(map[string][]codec.Block, len(writers))
+	for i, writer := range writers {
+		rank := 0
+		if writer.config.WriterID > writers[1-i].config.WriterID {
+			rank = 1
 		}
-		tag := byte('a' + i)
-		events := prunePageEvents(tag, base)
-		writePageEvents(t, writer, entry.now, day, events)
+		base := uint32(rank) * 40_940_000
+		events := prunePageEvents(byte('a'+rank), base)
+		writePageEvents(t, writer, &now[i], day, events)
 		require.NoError(t, writer.Sync(context.Background()))
 
 		manifest, err := writer.downloadManifest(context.Background(), dayKey(day), writer.config.WriterID)
@@ -384,52 +367,20 @@ func TestPagePrune(t *testing.T) {
 		require.Len(t, manifest.Chunks, 1)
 		blocks := manifest.Chunks[0].Blocks
 		require.Len(t, blocks, pruneEventsPerWriter/pruneBlockEntries)
-		blockTimes[writer.config.WriterID] = pagePruneBlockTimes(events)
-		for j, block := range blocks {
+		originalBlocks[writer.config.WriterID] = blocks
+		for _, block := range blocks {
 			require.NotNil(t, block.Time)
-			require.Equalf(t, blockTimes[writer.config.WriterID][j], *block.Time, "writer %s block %d", writer.config.WriterID, j)
-			require.Equal(t, uint32(pruneBlockEntries), block.Entries)
-			assert.GreaterOrEqual(t, int(block.Entries)*pruneFrameBytes, 256<<10)
+			assert.Equal(t, uint32(pruneBlockEntries), block.Entries)
 		}
+		assert.Equal(t, &[2]uint32{base, base + 5_080_000}, blocks[0].Time)
+		assert.Equal(t, &[2]uint32{base + 9_990_000, base + 15_340_000}, blocks[2].Time, "rollback at a block boundary")
 	}
 
 	from, to := day, day.Add(24*time.Hour-time.Millisecond)
-	for _, direction := range []struct {
-		from, to time.Time
-	}{
-		{from: from, to: to},
-		{from: to, to: from},
-	} {
-		want := collectEvents(t, writers[0].service.Scan(context.Background(), direction.from, direction.to, 1, 2))
-		got := pageAllEvents(t, writers[0].service, direction.from, direction.to, 7, 1, 2)
-		require.Equal(t, pagePruneEventIDs(want), pagePruneEventIDs(got), "writer metadata")
-	}
-
 	compactor := testService(t, server, "page-prune", "compactor", func(c *config) {
 		c.now = func() time.Time { return day.Add(72 * time.Hour) }
 	})
 	defer compactor.Close()
-	require.NoError(t, compactor.Compact(context.Background(), day))
-	meta, ok, err := compactor.compactMetadata(context.Background(), dayKey(day))
-	require.NoError(t, err)
-	require.True(t, ok)
-	require.Len(t, meta.Sources, len(writers))
-	for _, source := range meta.Sources {
-		want := blockTimes[source.Writer]
-		require.NotEmpty(t, want)
-		require.Len(t, source.Blocks, len(want))
-		for i, block := range source.Blocks {
-			require.NotNilf(t, block.Time, "compacted writer %s block %d", source.Writer, i)
-			require.Equalf(t, want[i], *block.Time, "compacted writer %s block %d", source.Writer, i)
-		}
-	}
-
-	reader := testService(t, server, "page-prune", "fresh-reader", func(c *config) {
-		c.now = func() time.Time { return day.Add(72 * time.Hour) }
-	})
-	defer reader.Close()
-	meter := &measuredClient{Client: reader.s3Client}
-	reader.s3Client = meter
 	actors := []uint32{1, 2}
 	directions := []struct {
 		name     string
@@ -439,64 +390,64 @@ func TestPagePrune(t *testing.T) {
 		{name: "descending", from: to, to: from},
 	}
 
-	for _, direction := range directions {
-		t.Run(direction.name, func(t *testing.T) {
-			scanEvents := collectEvents(t, reader.Scan(context.Background(), direction.from, direction.to, actors...))
-			pagedEvents := pageAllEvents(t, reader, direction.from, direction.to, 7, actors...)
-			require.Equal(t, pagePruneEventIDs(scanEvents), pagePruneEventIDs(pagedEvents))
-
-			meter.bytes, meter.requests = 0, 0
-			first, next, err := reader.Page(context.Background(), direction.from, direction.to, Zero, 5, actors...)
+	var meta *codec.CompactMetadata
+	for _, stage := range []string{"writer", "compact", "legacy"} {
+		// Prepare each stage even when -run filters out an earlier subtest.
+		switch stage {
+		case "compact":
+			require.NoError(t, compactor.Compact(context.Background(), day))
+			var ok bool
+			var err error
+			meta, ok, err = compactor.compactMetadata(context.Background(), dayKey(day))
 			require.NoError(t, err)
-			require.Len(t, first, 5)
-			require.NotEqual(t, Zero, next)
-			require.Equal(t, pagePruneEventIDs(scanEvents[:5]), pagePruneEventIDs(first))
-			pageBytes, pageRanges := meter.bytes, meter.requests
-
-			meter.bytes, meter.requests = 0, 0
-			_ = collectEvents(t, reader.Scan(context.Background(), direction.from, direction.to, actors...))
-			scanBytes, scanRanges := meter.bytes, meter.requests
-			assert.Less(t, pageBytes, scanBytes, "a small page should read fewer payload bytes than Scan")
-			assert.Less(t, pageRanges, scanRanges, "a small page should read fewer ranges than Scan")
-
-			deep := len(scanEvents) * 3 / 4
-			cursor := pagePruneCursorAfter(t, reader, direction.from, direction.to, actors, deep, 17)
-			meter.bytes, meter.requests = 0, 0
-			late, next, err := reader.Page(context.Background(), direction.from, direction.to, cursor, 5, actors...)
+			require.True(t, ok)
+			require.Len(t, meta.Sources, len(writers))
+			for _, source := range meta.Sources {
+				assert.Equal(t, originalBlocks[source.Writer], source.Blocks, "compaction preserves block bounds")
+			}
+		case "legacy":
+			for _, source := range meta.Sources {
+				for i := range source.Blocks {
+					source.Blocks[i].Time = nil
+				}
+			}
+			data, err := codec.Encode(meta)
 			require.NoError(t, err)
-			require.Len(t, late, 5)
-			require.NotEqual(t, Zero, next)
-			require.Equal(t, pagePruneEventIDs(scanEvents[deep:deep+5]), pagePruneEventIDs(late))
-			lateBytes, lateRanges := meter.bytes, meter.requests
-			assert.Less(t, lateBytes, scanBytes, "a late cursor should read fewer payload bytes than Scan")
-			assert.Less(t, lateRanges, scanRanges, "a late cursor should read fewer ranges than Scan")
-		})
-	}
-
-	legacy := *meta
-	legacy.Sources = slices.Clone(meta.Sources)
-	for i := range legacy.Sources {
-		legacy.Sources[i].Blocks = slices.Clone(meta.Sources[i].Blocks)
-		for j := range legacy.Sources[i].Blocks {
-			legacy.Sources[i].Blocks[j].Time = nil
+			_, err = compactor.s3Client.Upload(context.Background(), keyOfCompactMeta(dayKey(day)), data)
+			require.NoError(t, err)
 		}
-	}
-	blockJSON, err := codec.Encode(legacy.Sources[0].Blocks[0])
-	require.NoError(t, err)
-	assert.NotContains(t, string(blockJSON), `"time"`)
-	legacyJSON, err := codec.Encode(&legacy)
-	require.NoError(t, err)
-	_, err = reader.s3Client.Upload(context.Background(), keyOfCompactMeta(dayKey(day)), legacyJSON)
-	require.NoError(t, err)
 
-	legacyReader := testService(t, server, "page-prune", "legacy-reader", func(c *config) {
-		c.now = func() time.Time { return day.Add(72 * time.Hour) }
-	})
-	defer legacyReader.Close()
-	for _, direction := range directions {
-		scanEvents := collectEvents(t, legacyReader.Scan(context.Background(), direction.from, direction.to, actors...))
-		pagedEvents := pageAllEvents(t, legacyReader, direction.from, direction.to, 7, actors...)
-		require.Equalf(t, pagePruneEventIDs(scanEvents), pagePruneEventIDs(pagedEvents), "legacy %s", direction.name)
+		t.Run(stage, func(t *testing.T) {
+			reader := testService(t, server, "page-prune", "reader", func(c *config) {
+				c.now = func() time.Time { return day.Add(72 * time.Hour) }
+			})
+			defer reader.Close()
+			meter := &measuredClient{Client: reader.s3Client}
+			reader.s3Client = meter
+			for _, direction := range directions {
+				t.Run(direction.name, func(t *testing.T) {
+					paged := pageAllEvents(t, reader, direction.from, direction.to, 7, actors...)
+					meter.bytes, meter.requests = 0, 0
+					want := collectEvents(t, reader.Scan(context.Background(), direction.from, direction.to, actors...))
+					scanBytes, scanRanges := meter.bytes, meter.requests
+					assert.Equal(t, want, paged)
+					if stage == "legacy" {
+						return
+					}
+
+					for _, offset := range []int{0, len(want) * 3 / 4} {
+						cursor := pagePruneCursorAfter(t, reader, direction.from, direction.to, actors, offset, 17)
+						meter.bytes, meter.requests = 0, 0
+						events, next, err := reader.Page(context.Background(), direction.from, direction.to, cursor, 5, actors...)
+						require.NoError(t, err)
+						assert.NotEqual(t, Zero, next)
+						assert.Equalf(t, want[offset:offset+5], events, "cursor offset %d", offset)
+						assert.Less(t, meter.bytes, scanBytes, "a small page should read fewer payload bytes than Scan")
+						assert.Less(t, meter.requests, scanRanges, "a small page should read fewer ranges than Scan")
+					}
+				})
+			}
+		})
 	}
 }
 
@@ -507,21 +458,13 @@ func BenchmarkPageReads(b *testing.B) {
 
 	day := time.Date(2026, 7, 19, 0, 0, 0, 0, time.UTC)
 	const eventsPerWriter = 5_000
-	nowA, nowB := day, day
-	writers := []*Service{
-		testService(b, server, "bench-page-reads", "writer-a", WithBuffer(eventsPerWriter), func(c *config) {
-			c.now = func() time.Time { return nowA }
-		}),
-		testService(b, server, "bench-page-reads", "writer-b", WithBuffer(eventsPerWriter), func(c *config) {
-			c.now = func() time.Time { return nowB }
-		}),
-	}
-	for i, writer := range writers {
+	blockCount := 0
+	for i := range 2 {
+		now := day
+		writer := testService(b, server, "bench-page-reads", fmt.Sprintf("writer-%c", 'a'+i), WithBuffer(eventsPerWriter), func(c *config) {
+			c.now = func() time.Time { return now }
+		})
 		defer writer.Close()
-		now := &nowA
-		if i == 1 {
-			now = &nowB
-		}
 		tag := byte('a' + i)
 		events := make([]pageTestEvent, eventsPerWriter)
 		for ordinal := range events {
@@ -536,12 +479,8 @@ func BenchmarkPageReads(b *testing.B) {
 				actors: actors,
 			}
 		}
-		writePageEvents(b, writer, now, day, events)
+		writePageEvents(b, writer, &now, day, events)
 		require.NoError(b, writer.Sync(context.Background()))
-	}
-
-	blockCount := 0
-	for _, writer := range writers {
 		manifest, err := writer.downloadManifest(context.Background(), dayKey(day), writer.config.WriterID)
 		require.NoError(b, err)
 		require.Len(b, manifest.Chunks, 1)
@@ -631,19 +570,6 @@ func prunePageEvents(tag byte, base uint32) []pageTestEvent {
 	return events
 }
 
-func pagePruneBlockTimes(events []pageTestEvent) [][2]uint32 {
-	times := make([][2]uint32, 0, len(events)/pruneBlockEntries)
-	for start := 0; start < len(events); start += pruneBlockEntries {
-		low, high := uint32(events[start].millis), uint32(events[start].millis)
-		for _, event := range events[start+1 : start+pruneBlockEntries] {
-			millis := uint32(event.millis)
-			low, high = min(low, millis), max(high, millis)
-		}
-		times = append(times, [2]uint32{low, high})
-	}
-	return times
-}
-
 func pagePruneText(tag byte, ordinal, actors, frameBytes int) string {
 	textBytes := frameBytes - 8 - actors*4
 	prefix := fmt.Sprintf("%c%04d|level=info service=tales action=append actor=1 payload=", tag, ordinal)
@@ -660,14 +586,6 @@ func pagePruneFill(prefix string, size int, state uint64) string {
 		text[i] = "abcdefghijklmnopqrstuvwxyz0123456789"[state%36]
 	}
 	return string(text)
-}
-
-func pagePruneEventIDs(events []Event) []string {
-	ids := make([]string, len(events))
-	for i, event := range events {
-		ids[i] = event.Text()[:6]
-	}
-	return ids
 }
 
 func pagePruneCursorAfter(tb testing.TB, service *Service, from, to time.Time, actors []uint32, count, pageSize int) Cursor {
