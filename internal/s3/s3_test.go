@@ -110,11 +110,12 @@ func testClientBasics(t *testing.T) {
 	_, err = client.DownloadRange(ctx, key, "stale-etag", 0, int64(len(data)))
 	require.ErrorIs(t, err, s3lib.ErrETagChanged)
 
+	heads := len(server.GetRequestsWithMethod("HEAD"))
 	object, err := client.Stat(ctx, key)
 	require.NoError(t, err)
 	assert.Equal(t, int64(len(data)), object.Size)
 	assert.Equal(t, etag, object.ETag)
-	assert.Len(t, server.GetRequestsWithMethod("HEAD"), 1)
+	assert.Len(t, server.GetRequestsWithMethod("HEAD"), heads+1)
 
 	var listed []Object
 	for object, err := range client.List(ctx, ".") {

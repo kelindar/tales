@@ -1,16 +1,150 @@
 package main
 
-import "testing"
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/kelindar/s3/mock"
+	"github.com/kelindar/tales"
+	"github.com/kelindar/tales/internal/codec"
+	"github.com/kelindar/tales/internal/s3"
+	"github.com/stretchr/testify/require"
+)
+
+const (
+	syncPrefix = "sync-bench"
+	syncWriter = "sync-benchmark"
+	syncBuffer = 1024
+	syncText   = "hello world"
+)
+
+// Run with: go test -run '^$' -bench '^BenchmarkSync' -benchmem -benchtime=100x.
+func BenchmarkSync(b *testing.B) {
+	for _, seedHistory := range []int{0, 1000} {
+		for _, batch := range []int{1, 100} {
+			b.Run(fmt.Sprintf("history=%d/batch=%d", seedHistory+1, batch), func(b *testing.B) {
+				b.StopTimer()
+				server := mock.New("bench", "us-east-1")
+				server.SetRequestLogging(false)
+				defer server.Close()
+
+				fixture := newSyncFixture(b, server, seedHistory)
+				b.ReportAllocs()
+				b.ReportMetric(float64(batch), "events/sync")
+				for range b.N {
+					fixture.reset(b)
+					logger := newSyncLogger(b, server)
+					require.NoError(b, logger.Log(syncText, 1))
+					require.NoError(b, logger.Sync(context.Background()))
+
+					b.StartTimer()
+					err := syncBatch(logger, batch)
+					b.StopTimer()
+					require.NoError(b, err)
+					require.NoError(b, logger.Close())
+				}
+			})
+		}
+	}
+}
+
+type syncFixture struct {
+	server       *mock.Server
+	day          string
+	manifestKey  string
+	manifestData []byte
+}
+
+func newSyncFixture(b *testing.B, server *mock.Server, history int) *syncFixture {
+	fixture := &syncFixture{server: server}
+	logger := newSyncLogger(b, server)
+	require.NoError(b, logger.Log(syncText, 1))
+	require.NoError(b, logger.Sync(context.Background()))
+	require.NoError(b, logger.Close())
+
+	var manifestKey string
+	for _, key := range server.ListObjects(syncPrefix + "/") {
+		if strings.HasSuffix(key, "/manifest.json") {
+			manifestKey = key
+			break
+		}
+	}
+	require.NotEmpty(b, manifestKey)
+	manifestObject, ok := server.GetObject(manifestKey)
+	require.True(b, ok)
+	manifest, err := codec.Decode[codec.Manifest](manifestObject.Content)
+	require.NoError(b, err)
+	require.Len(b, manifest.Chunks, 1)
+
+	fixture.day = manifest.Day
+	fixture.manifestKey = manifestKey
+	writer := manifest.Writer
+	chunk := manifest.Chunks[0]
+	chunkKey := syncChunkKey(fixture.day, writer, 0)
+	chunkObject, ok := server.GetObject(chunkKey)
+	require.True(b, ok)
+	chunkData := bytes.Clone(chunkObject.Content)
+	if history == 0 {
+		server.Clear()
+		return fixture
+	}
+
+	seededManifest := &codec.Manifest{Day: fixture.day, Writer: writer, Chunks: make([]codec.ChunkEntry, history)}
+	for sequence := range history {
+		entry := chunk
+		entry.Sequence = codec.Sequence(sequence)
+		entry.ETag = server.PutObject(syncChunkKey(fixture.day, writer, uint64(sequence)), chunkData)
+		seededManifest.Chunks[sequence] = entry
+	}
+	require.NoError(b, codec.ValidateManifest(seededManifest, fixture.day, writer))
+	fixture.manifestData, err = codec.Encode(seededManifest)
+	require.NoError(b, err)
+	server.PutObject(fixture.manifestKey, fixture.manifestData)
+	return fixture
+}
+
+func (f *syncFixture) reset(b *testing.B) {
+	require.Equal(b, f.day, utcDay(time.Now()).Format("2006-01-02"), "benchmark crossed a UTC day; rerun with a fresh fixture")
+	if len(f.manifestData) == 0 {
+		f.server.DeleteObject(f.manifestKey)
+		return
+	}
+	f.server.PutObject(f.manifestKey, f.manifestData)
+}
+
+func newSyncLogger(b *testing.B, server *mock.Server) *tales.Service {
+	logger, err := tales.New("bench", "us-east-1",
+		tales.WithPrefix(syncPrefix),
+		tales.WithWriterID(syncWriter),
+		tales.WithBuffer(syncBuffer),
+		tales.WithClient(func(config s3.Config) (s3.Client, error) {
+			return s3.NewMockClient(server, config)
+		}),
+	)
+	require.NoError(b, err)
+	return logger
+}
+
+func syncBatch(logger *tales.Service, batch int) error {
+	for range batch {
+		if err := logger.Log(syncText, 1); err != nil {
+			return err
+		}
+	}
+	return logger.Sync(context.Background())
+}
+
+func syncChunkKey(day, writer string, sequence uint64) string {
+	return fmt.Sprintf("%s/%s/writers/%s/%020d.log", syncPrefix, day, writer, sequence)
+}
 
 func TestMust(t *testing.T) {
-	must(nil)
-
-	defer func() {
-		if recover() == nil {
-			t.Fatal("expected panic")
-		}
-	}()
-	must(errString("boom"))
+	require.NotPanics(t, func() { must(nil) })
+	require.PanicsWithValue(t, errString("boom"), func() { must(errString("boom")) })
 }
 
 type errString string

@@ -108,18 +108,23 @@ func TestAmbiguousCommit(t *testing.T) {
 	server := s3mock.New("events", "us-east-1")
 	defer server.Close()
 	service := testService(t, server, "ambiguous", "writer")
-	client := &ambiguousClient{Client: service.s3Client, failManifest: true}
+	client := &ambiguousClient{Client: service.s3Client}
 	service.s3Client = client
 	defer service.Close()
 
+	require.NoError(t, service.Log("first", 1))
+	require.NoError(t, service.Sync(context.Background()))
+	client.failManifest = true
 	require.NoError(t, service.Log("once", 1))
 	require.Error(t, service.Sync(context.Background()))
 	require.NoError(t, service.Sync(context.Background()))
 	manifest, err := service.downloadManifest(context.Background(), dayKey(time.Now()), service.config.WriterID)
 	require.NoError(t, err)
-	require.Len(t, manifest.Chunks, 1)
+	require.Len(t, manifest.Chunks, 2)
+	require.NoError(t, service.Log("last", 1))
+	require.NoError(t, service.Sync(context.Background()))
 	events := collectEvents(t, service.Scan(context.Background(), time.Now().Add(-time.Hour), time.Now().Add(time.Hour), 1))
-	require.Equal(t, []string{"once"}, eventTexts(events))
+	require.Equal(t, []string{"first", "once", "last"}, eventTexts(events))
 }
 
 func TestWarmSnapshot(t *testing.T) {

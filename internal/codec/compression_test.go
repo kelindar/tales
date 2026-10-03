@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 
@@ -202,6 +203,15 @@ func TestCodecLargeData(t *testing.T) {
 	codec, err := NewCodec()
 	require.NoError(t, err)
 	defer codec.Close()
+
+	t.Run("ChunkBoundary", func(t *testing.T) {
+		original := bytes.Repeat([]byte{'x'}, 8<<20+math.MaxUint16)
+		compressed, err := codec.Compress(original)
+		require.NoError(t, err)
+		decoded, err := codec.Decompress(compressed)
+		require.NoError(t, err)
+		assert.Equal(t, original, decoded)
+	})
 
 	t.Run("LargeTextData", func(t *testing.T) {
 		// Create large text data

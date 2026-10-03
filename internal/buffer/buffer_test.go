@@ -67,6 +67,7 @@ func TestBlockBoundaries(t *testing.T) {
 		require.NoError(t, codec.ValidateBlocks(1, batch.Blocks, batch.Entries, int64(len(batch.Data))))
 		var rebuilt []byte
 		for _, block := range batch.Blocks {
+			assert.Equal(t, &[2]uint32{0, 0}, block.Time)
 			raw, err := c.Decompress(batch.Data[block.Offset : block.Offset+block.Size])
 			require.NoError(t, err)
 			assert.LessOrEqual(t, len(raw), 256<<10)
@@ -99,6 +100,19 @@ func TestBlockBoundaries(t *testing.T) {
 		buf.data = []byte{1}
 		_, _, err := buf.compress()
 		assert.Error(t, err)
+	})
+
+	t.Run("clock rollback", func(t *testing.T) {
+		buf := New(3, c)
+		for _, millis := range []uint32{30, 0, 10} {
+			entry, err := codec.NewLogEntry(millis, "event", []uint32{1})
+			require.NoError(t, err)
+			require.NoError(t, buf.Add(day, entry))
+		}
+		batch, err := buf.Take()
+		require.NoError(t, err)
+		require.Len(t, batch.Blocks, 1)
+		assert.Equal(t, &[2]uint32{0, 30}, batch.Blocks[0].Time)
 	})
 }
 

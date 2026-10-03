@@ -3,12 +3,16 @@ package tales
 import (
 	"bytes"
 	"context"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/kelindar/roaring"
 	s3mock "github.com/kelindar/s3/mock"
 	"github.com/kelindar/tales/internal/codec"
+	internals3 "github.com/kelindar/tales/internal/s3"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -107,6 +111,141 @@ func TestDiscoveryRefresh(t *testing.T) {
 	now = now.Add(reader.config.ChunkInterval)
 	to = now.Add(time.Hour)
 	require.ElementsMatch(t, []string{"a", "b"}, eventTexts(collectEvents(t, reader.Scan(context.Background(), from, to, 1))))
+}
+
+func TestCompactedPending(t *testing.T) {
+	server := s3mock.New("events", "us-east-1")
+	defer server.Close()
+	day := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+	now := day.Add(time.Hour)
+	writer := testService(t, server, "compacted-pending", "writer", WithBuffer(10), func(c *config) {
+		c.now = func() time.Time { return now }
+	})
+	defer func() { require.NoError(t, writer.Close()) }()
+	client := &ambiguousClient{Client: writer.s3Client}
+	writer.s3Client = client
+	require.NoError(t, writer.Log("first", 1))
+	require.NoError(t, writer.Sync(context.Background()))
+
+	now = day.Add(time.Hour + time.Millisecond)
+	require.NoError(t, writer.Log("ambiguous", 1))
+	client.failManifest = true
+	require.Error(t, writer.Sync(context.Background()))
+
+	compactionNow := day.Add(72 * time.Hour)
+	compactor := testService(t, server, "compacted-pending", "compactor", func(c *config) {
+		c.now = func() time.Time { return compactionNow }
+	})
+	defer func() { require.NoError(t, compactor.Close()) }()
+	require.NoError(t, compactor.Compact(context.Background(), day))
+
+	now = compactionNow.Add(2 * time.Minute)
+	from, to := day, day.Add(24*time.Hour-time.Millisecond)
+	want := []string{"first", "ambiguous"}
+	assert.Equal(t, want, eventTexts(collectEvents(t, writer.Scan(context.Background(), from, to, 1))))
+	events, next, err := writer.Page(context.Background(), from, to, Zero, 10, 1)
+	require.NoError(t, err)
+	assert.Equal(t, want, eventTexts(events))
+	assert.Equal(t, Zero, next)
+}
+
+func TestHistoricalRefresh(t *testing.T) {
+	server := s3mock.New("events", "us-east-1")
+	defer server.Close()
+	day := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+	readerNow := day.Add(72 * time.Hour)
+	reader := testService(t, server, "historical-refresh", "reader", func(c *config) {
+		c.now = func() time.Time { return readerNow }
+	})
+	defer func() { require.NoError(t, reader.Close()) }()
+	writerNow := day.Add(12 * time.Hour)
+	writer := testService(t, server, "historical-refresh", "writer", func(c *config) {
+		c.now = func() time.Time { return writerNow }
+	})
+	defer func() { require.NoError(t, writer.Close()) }()
+	require.NoError(t, writer.Log("delayed", 1))
+
+	from, to := day, day.Add(24*time.Hour-time.Millisecond)
+	assert.Empty(t, collectEvents(t, reader.Scan(context.Background(), from, to, 1)))
+	require.NoError(t, writer.Sync(context.Background()))
+	readerNow = readerNow.Add(reader.config.ChunkInterval + time.Millisecond)
+
+	assert.Equal(t, []string{"delayed"}, eventTexts(collectEvents(t, reader.Scan(context.Background(), from, to, 1))))
+}
+
+func TestDiscoveryRace(t *testing.T) {
+	server := s3mock.New("events", "us-east-1")
+	defer server.Close()
+	now := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
+	service := testService(t, server, "discovery-race", "writer", func(c *config) { c.now = func() time.Time { return now } })
+	defer func() { require.NoError(t, service.Close()) }()
+	require.NoError(t, service.Log("first", 1))
+	require.NoError(t, service.Sync(context.Background()))
+	from, to := now.Add(-time.Hour), now.Add(time.Hour)
+	assert.Equal(t, []string{"first"}, eventTexts(collectEvents(t, service.Scan(context.Background(), from, to, 1))))
+
+	now = now.Add(service.config.ChunkInterval)
+	client := &pausedManifestClient{Client: service.s3Client, started: make(chan struct{}, 1), release: make(chan struct{})}
+	service.s3Client = client
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(client.release) }) }
+	type scanResult struct {
+		events []Event
+		err    error
+	}
+	done := make(chan scanResult, 1)
+	go func() {
+		var result scanResult
+		for event, err := range service.Scan(context.Background(), from, to, 1) {
+			if err != nil {
+				result.err = err
+				break
+			}
+			result.events = append(result.events, event)
+		}
+		done <- result
+	}()
+	defer release()
+	select {
+	case <-client.started:
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "manifest download did not pause")
+	}
+
+	require.NoError(t, service.Log("second", 1))
+	require.NoError(t, service.Sync(context.Background()))
+	release()
+	select {
+	case result := <-done:
+		require.NoError(t, result.err)
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "paused scan did not finish")
+	}
+
+	assert.Equal(t, []string{"first", "second"}, eventTexts(collectEvents(t, service.Scan(context.Background(), from, to, 1))))
+}
+
+type pausedManifestClient struct {
+	internals3.Client
+	started chan struct{}
+	release chan struct{}
+}
+
+func (c *pausedManifestClient) Download(ctx context.Context, key string) ([]byte, error) {
+	data, err := c.Client.Download(ctx, key)
+	if err != nil || !strings.HasSuffix(key, "/manifest.json") {
+		return data, err
+	}
+	select {
+	case c.started <- struct{}{}:
+	default:
+	}
+	select {
+	case <-c.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return data, nil
 }
 
 func TestQueryEdges(t *testing.T) {
@@ -433,4 +572,16 @@ func ExampleService_Page() {
 		}
 		cursor = next // Reuse with the same bounds and actors.
 	}
+}
+
+func collectRaw(raw []byte, expected uint32, day, from, to time.Time, actors []uint32, writer string, base uint64, selected *roaring.Bitmap) ([]eventRef, error) {
+	capacity := int(expected)
+	if selected != nil {
+		capacity = min(capacity, int(selected.Count()))
+	}
+	found := eventSelection{refs: make([]eventRef, 0, capacity)}
+	if err := found.collectFrames(raw, expected, 0, day, from, to, actors, writer, base, selected); err != nil {
+		return nil, err
+	}
+	return found.refs, nil
 }

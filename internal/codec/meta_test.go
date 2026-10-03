@@ -20,6 +20,24 @@ func TestBlockDirectory(t *testing.T) {
 	assert.Equal(t, fixture, string(encoded))
 	assert.NoError(t, ValidateBlocks(1, valid, 3, 15))
 	assert.NoError(t, ValidateBlocks(0, nil, 3, 15))
+	t.Run("time bounds", func(t *testing.T) {
+		blocks := []Block{{Entries: 3, Size: 15, Time: &[2]uint32{0, 0}}}
+		data, err := Encode(blocks)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), `"time":[0,0]`)
+		decoded, err := Decode[[]Block](data)
+		require.NoError(t, err)
+		assert.Equal(t, blocks, *decoded)
+		assert.NoError(t, ValidateBlocks(1, blocks, 3, 15))
+		assert.NoError(t, validateTimes(blocks, [2]uint32{0, 20}))
+		assert.Error(t, validateTimes(blocks, [2]uint32{1, 20}))
+		blocks[0].Time = &[2]uint32{0, 21}
+		assert.Error(t, validateTimes(blocks, [2]uint32{0, 20}))
+		blocks[0].Time = &[2]uint32{2, 1}
+		assert.Error(t, ValidateBlocks(1, blocks, 3, 15))
+		blocks[0].Time = &[2]uint32{0, MaxMillis + 1}
+		assert.Error(t, ValidateBlocks(1, blocks, 3, 15))
+	})
 	for _, test := range []struct {
 		name    string
 		version uint8

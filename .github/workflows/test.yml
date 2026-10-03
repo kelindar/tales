@@ -49,6 +49,10 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           gocognit -ignore "_test|testdata|cmd|mock" -over "${GOCOGNIT_MAX}" . ./internal
 
+      - name: Test benchmark module
+        working-directory: cmd/bench
+        run: go test -mod=readonly ./...
+
       - name: Upload coverage to Coveralls
         uses: shogo82148/actions-goveralls@v1
         with:

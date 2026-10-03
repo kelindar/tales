@@ -97,10 +97,11 @@ type Service struct {
 	closing   bool
 	closed    bool
 
-	cacheMu     sync.Mutex
-	discovery   map[string]discoveryCache
-	compactMeta map[string]*codec.CompactMetadata
-	compactMiss map[string]time.Time
+	cacheMu        sync.Mutex
+	discoveryEpoch uint64
+	discovery      map[string]discoveryCache
+	compactMeta    map[string]*codec.CompactMetadata
+	compactMiss    map[string]time.Time
 }
 
 // New opens a service for the given S3 bucket and region.
