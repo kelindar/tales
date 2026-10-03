@@ -145,7 +145,10 @@ func ValidateChunk(chunk ChunkEntry) error {
 	if err := validateActorRanges(chunk.Actors, chunk.BitmapSize); err != nil {
 		return err
 	}
-	return ValidateBlocks(chunk.Version, chunk.Blocks, chunk.Entries, chunk.Data.Size)
+	if err := ValidateBlocks(chunk.Version, chunk.Blocks, chunk.Entries, chunk.Data.Size); err != nil {
+		return err
+	}
+	return validateTimes(chunk.Blocks, chunk.Time)
 }
 
 func ValidateCompact(meta *CompactMetadata, day string) error {
@@ -187,15 +190,19 @@ func validateCompactSource(sources []CompactSource, i int, base uint64) error {
 	case !source.Copied && source.Payload.Key != source.Source:
 		return fmt.Errorf("direct compact source %d has mismatched payload", i)
 	}
-	return ValidateBlocks(source.Version, source.Blocks, source.Entries, source.Payload.Size)
+	if err := ValidateBlocks(source.Version, source.Blocks, source.Entries, source.Payload.Size); err != nil {
+		return err
+	}
+	return validateTimes(source.Blocks, source.Time)
 }
 
 // Block locates an independent zstd frame relative to the event payload.
 type Block struct {
-	First   uint32 `json:"first"`
-	Entries uint32 `json:"entries"`
-	Offset  int64  `json:"offset"`
-	Size    int64  `json:"size"`
+	First   uint32     `json:"first"`
+	Entries uint32     `json:"entries"`
+	Offset  int64      `json:"offset"`
+	Size    int64      `json:"size"`
+	Time    *[2]uint32 `json:"time,omitempty"` // Optional inclusive millisecond bounds within the UTC day.
 }
 
 // ValidateBlocks accepts the original single-frame format or a complete v1 directory.
@@ -212,11 +219,23 @@ func ValidateBlocks(version uint8, blocks []Block, entries uint32, size int64) e
 		if uint64(block.First) != ordinal || block.Entries == 0 || block.Offset != offset || block.Size <= 0 || block.Size > size-offset {
 			return fmt.Errorf("invalid block directory")
 		}
+		if block.Time != nil && (block.Time[0] > block.Time[1] || block.Time[1] > MaxMillis) {
+			return fmt.Errorf("invalid block time bounds")
+		}
 		ordinal += uint64(block.Entries)
 		offset += block.Size
 	}
 	if ordinal != uint64(entries) || offset != size {
 		return fmt.Errorf("incomplete block directory")
+	}
+	return nil
+}
+
+func validateTimes(blocks []Block, bounds [2]uint32) error {
+	for _, block := range blocks {
+		if block.Time != nil && (block.Time[0] < bounds[0] || block.Time[1] > bounds[1]) {
+			return fmt.Errorf("block time bounds exceed payload bounds")
+		}
 	}
 	return nil
 }

@@ -155,32 +155,23 @@ func (l *Service) collectPage(ctx context.Context, snapshot querySnapshot, windo
 		}
 		dayFrom := maxTime(window.lower, day)
 		dayTo := minTime(window.upper, day.Add(24*time.Hour-time.Millisecond))
-		found, err := l.queryDay(ctx, snapshot, day, dayFrom, dayTo, actors)
-		if err != nil {
+		found := eventSelection{limit: limit - len(events) + 1, ascending: window.ascending, position: position}
+		if err := l.queryDay(ctx, snapshot, day, dayFrom, dayTo, actors, &found); err != nil {
 			return nil, eventRef{}, false, err
 		}
-		sortEventRefs(found, window.ascending)
+		sortEventRefs(found.refs, window.ascending)
 
-		var full bool
-		events, last, full = takePageEvents(events, last, found, position, window.ascending, limit)
-		if full || day.Equal(window.lastDay) {
-			return events, last, full, nil
+		for _, ref := range found.refs {
+			if len(events) == limit {
+				return events, last, true, nil
+			}
+			events = append(events, ref.event)
+			last = ref
+		}
+		if day.Equal(window.lastDay) {
+			return events, last, false, nil
 		}
 	}
-}
-
-func takePageEvents(events []Event, last eventRef, found []eventRef, position *cursorPosition, ascending bool, limit int) ([]Event, eventRef, bool) {
-	for _, ref := range found {
-		if skipBeforeCursor(ref, position, ascending) {
-			continue
-		}
-		if len(events) == limit {
-			return events, last, true
-		}
-		events = append(events, ref.event)
-		last = ref
-	}
-	return events, last, false
 }
 
 func skipBeforeCursor(ref eventRef, position *cursorPosition, ascending bool) bool {
@@ -204,13 +195,13 @@ func (l *Service) scan(ctx context.Context, snapshot querySnapshot, from, to tim
 			yield(Event{}, err)
 			return
 		}
-		refs, err := l.queryDay(ctx, snapshot, day, lower, upper, actors)
-		if err != nil {
+		var found eventSelection
+		if err := l.queryDay(ctx, snapshot, day, lower, upper, actors, &found); err != nil {
 			yield(Event{}, err)
 			return
 		}
-		sortEventRefs(refs, ascending)
-		for _, ref := range refs {
+		sortEventRefs(found.refs, ascending)
+		for _, ref := range found.refs {
 			if !yield(ref.event, nil) {
 				return
 			}
@@ -262,87 +253,84 @@ func maxTime(a, b time.Time) time.Time {
 	return b
 }
 
-func (l *Service) queryDay(ctx context.Context, snapshot querySnapshot, day, from, to time.Time, actors []uint32) ([]eventRef, error) {
+func (l *Service) queryDay(ctx context.Context, snapshot querySnapshot, day, from, to time.Time, actors []uint32, found *eventSelection) error {
 	key := dayKey(day)
-	var refs []eventRef
 	meta, compact, err := l.compactMetadata(ctx, key)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if compact {
-		refs, err = l.queryCompactDay(ctx, day, from, to, actors, meta)
+		err = l.queryCompactDay(ctx, day, from, to, actors, meta, found)
 		var invalid invalidBitmapError
 		if s3.IsNoSuchKey(err) || errors.As(err, &invalid) {
 			l.cacheMu.Lock()
 			delete(l.compactMeta, key)
 			l.cacheMu.Unlock()
-			refs, err = l.queryWriterDay(ctx, snapshot, day, from, to, actors)
+			clear(found.refs)
+			found.refs = found.refs[:0]
+			err = l.queryWriterDay(ctx, snapshot, day, from, to, actors, found)
 		}
 	} else {
-		refs, err = l.queryWriterDay(ctx, snapshot, day, from, to, actors)
+		err = l.queryWriterDay(ctx, snapshot, day, from, to, actors, found)
 	}
 	if err != nil {
-		return nil, err
+		return err
 	}
 	for _, local := range snapshot.local {
 		if local.day.Equal(day) {
-			localRefs, err := collectRaw(local.raw, local.entries, day, from, to, actors, l.config.WriterID, local.base, nil)
-			if err != nil {
-				return nil, fmt.Errorf("query local snapshot: %w", err)
+			found.reserve(int(local.entries))
+			if err := found.collectFrames(local.raw, local.entries, 0, day, from, to, actors, l.config.WriterID, local.base, nil); err != nil {
+				return fmt.Errorf("query local snapshot: %w", err)
 			}
-			refs = append(refs, localRefs...)
 		}
 	}
-	return refs, nil
+	return nil
 }
 
-func (l *Service) queryWriterDay(ctx context.Context, snapshot querySnapshot, day, from, to time.Time, actors []uint32) ([]eventRef, error) {
+func (l *Service) queryWriterDay(ctx context.Context, snapshot querySnapshot, day, from, to time.Time, actors []uint32, found *eventSelection) error {
 	dayName := dayKey(day)
 	manifests, err := l.discoverManifests(ctx, day)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	var refs []eventRef
 	for _, manifest := range manifests {
 		var base uint64
 		for _, chunk := range manifest.Chunks {
-			chunkRefs, err := l.queryWriterChunk(ctx, snapshot, day, dayName, from, to, actors, manifest.Writer, chunk, base)
-			if err != nil {
-				return nil, err
+			if err := l.queryWriterChunk(ctx, snapshot, day, dayName, from, to, actors, manifest.Writer, chunk, base, found); err != nil {
+				return err
 			}
-			refs = append(refs, chunkRefs...)
 			base += uint64(chunk.Entries)
 		}
 	}
-	return refs, nil
+	return nil
 }
 
-func (l *Service) queryWriterChunk(ctx context.Context, snapshot querySnapshot, day time.Time, dayName string, from, to time.Time, actors []uint32, writer string, chunk codec.ChunkEntry, base uint64) ([]eventRef, error) {
+func (l *Service) queryWriterChunk(ctx context.Context, snapshot querySnapshot, day time.Time, dayName string, from, to time.Time, actors []uint32, writer string, chunk codec.ChunkEntry, base uint64, found *eventSelection) error {
 	sequence := uint64(chunk.Sequence)
 	if writer == l.config.WriterID {
 		if cutoff, ok := snapshot.cutoffs[dayName]; ok && (!cutoff.committed || sequence > cutoff.sequence) {
-			return nil, nil
+			return nil
 		}
 	}
 	fromMillis, toMillis := queryMillis(day, from, to)
 	if !chunk.Between(fromMillis, toMillis) {
-		return nil, nil
+		return nil
 	}
 	key := keyOfChunk(dayName, writer, sequence)
 	selected, err := l.chunkOrdinals(ctx, key, chunk.ETag, chunk.Actors, uint64(chunk.Entries), actors)
 	if err != nil || selected == nil || selected.Count() == 0 {
-		return nil, err
+		return err
 	}
-	return l.queryPayload(ctx, codec.ObjectRange{Key: key, ETag: chunk.ETag, Offset: chunk.Data.Offset, Size: chunk.Data.Size}, chunk.Blocks, chunk.Entries, day, from, to, actors, writer, base, selected)
+	return l.queryPayload(ctx, codec.ObjectRange{Key: key, ETag: chunk.ETag, Offset: chunk.Data.Offset, Size: chunk.Data.Size}, chunk.Blocks, chunk.Entries, day, from, to, actors, writer, base, selected, found)
 }
 
-func (l *Service) queryCompactDay(ctx context.Context, day, from, to time.Time, actors []uint32, meta *codec.CompactMetadata) ([]eventRef, error) {
+func (l *Service) queryCompactDay(ctx context.Context, day, from, to time.Time, actors []uint32, meta *codec.CompactMetadata, found *eventSelection) error {
 	selected, err := l.chunkOrdinals(ctx, meta.Index.Key, meta.Index.ETag, meta.Actors, compactEntries(meta), actors)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if selected == nil || selected.Count() == 0 {
-		return nil, nil
+		return nil
 	}
 	selectedBySource := make([]*roaring.Bitmap, len(meta.Sources))
 	sourceIndex := 0
@@ -359,7 +347,6 @@ func (l *Service) queryCompactDay(ctx context.Context, day, from, to time.Time, 
 		return true
 	})
 
-	var refs []eventRef
 	fromMillis, toMillis := queryMillis(day, from, to)
 	var writer string
 	var base uint64
@@ -372,14 +359,12 @@ func (l *Service) queryCompactDay(ctx context.Context, day, from, to time.Time, 
 			base += uint64(source.Entries)
 			continue
 		}
-		chunkRefs, err := l.queryPayload(ctx, source.Payload, source.Blocks, source.Entries, day, from, to, actors, source.Writer, base, local)
-		if err != nil {
-			return nil, err
+		if err := l.queryPayload(ctx, source.Payload, source.Blocks, source.Entries, day, from, to, actors, source.Writer, base, local, found); err != nil {
+			return err
 		}
-		refs = append(refs, chunkRefs...)
 		base += uint64(source.Entries)
 	}
-	return refs, nil
+	return nil
 }
 
 func (l *Service) chunkOrdinals(ctx context.Context, key, etag string, indexes map[uint32]codec.Range, entries uint64, actors []uint32) (*roaring.Bitmap, error) {
@@ -412,27 +397,19 @@ func (l *Service) chunkOrdinals(ctx context.Context, key, etag string, indexes m
 	return selected, nil
 }
 
-func collectRaw(raw []byte, expected uint32, day, from, to time.Time, actors []uint32, writer string, base uint64, selected *roaring.Bitmap) ([]eventRef, error) {
-	capacity := int(expected)
-	if selected != nil {
-		capacity = min(capacity, int(selected.Count()))
-	}
-	return collectFrames(make([]eventRef, 0, capacity), raw, expected, 0, day, from, to, actors, writer, base, selected)
-}
-
-func collectFrames(refs []eventRef, raw []byte, expected, first uint32, day, from, to time.Time, actors []uint32, writer string, base uint64, selected *roaring.Bitmap) ([]eventRef, error) {
+func (s *eventSelection) collectFrames(raw []byte, expected, first uint32, day, from, to time.Time, actors []uint32, writer string, base uint64, selected *roaring.Bitmap) error {
 	writerID, err := strconv.ParseUint(writer, 16, 64)
 	if err != nil {
-		return nil, fmt.Errorf("invalid writer ID %q", writer)
+		return fmt.Errorf("invalid writer ID %q", writer)
 	}
 	var count uint32
 	for len(raw) > 0 {
 		if count >= expected {
-			return nil, fmt.Errorf("entry count exceeds expected %d", expected)
+			return fmt.Errorf("entry count exceeds expected %d", expected)
 		}
 		entry, size, err := codec.ValidateEntry(raw)
 		if err != nil {
-			return nil, fmt.Errorf("event %d: %w", count, err)
+			return fmt.Errorf("event %d: %w", count, err)
 		}
 		ordinal := first + count
 		count++
@@ -448,12 +425,12 @@ func collectFrames(refs []eventRef, raw []byte, expected, first uint32, day, fro
 		if eventTime.Before(from) || eventTime.After(to) {
 			continue
 		}
-		refs = append(refs, eventRef{event: event, millis: eventTime.UnixMilli(), writer: writerID, position: base + uint64(ordinal)})
+		s.add(eventRef{event: event, millis: eventTime.UnixMilli(), writer: writerID, position: base + uint64(ordinal)})
 	}
 	if count != expected {
-		return nil, fmt.Errorf("entry count mismatch: got %d, want %d", count, expected)
+		return fmt.Errorf("entry count mismatch: got %d, want %d", count, expected)
 	}
-	return refs, nil
+	return nil
 }
 
 func (l *Service) discoverManifests(ctx context.Context, day time.Time) ([]*codec.Manifest, error) {

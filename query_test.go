@@ -434,3 +434,15 @@ func ExampleService_Page() {
 		cursor = next // Reuse with the same bounds and actors.
 	}
 }
+
+func collectRaw(raw []byte, expected uint32, day, from, to time.Time, actors []uint32, writer string, base uint64, selected *roaring.Bitmap) ([]eventRef, error) {
+	capacity := int(expected)
+	if selected != nil {
+		capacity = min(capacity, int(selected.Count()))
+	}
+	found := eventSelection{refs: make([]eventRef, 0, capacity)}
+	if err := found.collectFrames(raw, expected, 0, day, from, to, actors, writer, base, selected); err != nil {
+		return nil, err
+	}
+	return found.refs, nil
+}

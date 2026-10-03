@@ -18,6 +18,9 @@ type writerState struct {
 	buffer    *buffer.Buffer
 	pending   *pendingBatch
 	manifests map[string]*codec.Manifest
+
+	encodedManifest *codec.Manifest
+	manifestJSON    []byte // Committed manifest without the closing array and object delimiters.
 }
 
 type pendingBatch struct {
@@ -96,11 +99,9 @@ func (l *Service) persistPending(ctx context.Context, state *writerState, manife
 	next := &codec.Manifest{
 		Day:    day,
 		Writer: l.config.WriterID,
-		Chunks: make([]codec.ChunkEntry, len(manifest.Chunks), len(manifest.Chunks)+1),
+		Chunks: append(manifest.Chunks, *pending.chunk),
 	}
-	copy(next.Chunks, manifest.Chunks)
-	next.Chunks = append(next.Chunks, *pending.chunk)
-	data, err := codec.Encode(next)
+	data, err := state.encodeManifest(manifest, next)
 	if err != nil {
 		return fmt.Errorf("encode writer manifest: %w", err)
 	}
@@ -108,9 +109,36 @@ func (l *Service) persistPending(ctx context.Context, state *writerState, manife
 		return fmt.Errorf("publish writer manifest: %w", err)
 	}
 	state.manifests[day] = next
+	state.encodedManifest = next
+	state.manifestJSON = data[:len(data)-2]
 	state.pending = nil
 	l.invalidateDiscovery(day)
 	return nil
+}
+
+func (state *writerState) encodeManifest(manifest, next *codec.Manifest) ([]byte, error) {
+	if len(manifest.Chunks) == 0 {
+		return codec.Encode(next)
+	}
+	if state.encodedManifest != manifest {
+		data, err := codec.Encode(manifest)
+		if err != nil {
+			return nil, err
+		}
+		state.encodedManifest = manifest
+		state.manifestJSON = data[:len(data)-2]
+	}
+	chunk, err := codec.Encode(&next.Chunks[len(next.Chunks)-1])
+	if err != nil {
+		return nil, err
+	}
+
+	// Publication bytes remain immutable, including when a client retains them.
+	data := make([]byte, len(state.manifestJSON), len(state.manifestJSON)+len(chunk)+3)
+	copy(data, state.manifestJSON)
+	data = append(data, ',')
+	data = append(data, chunk...)
+	return append(data, ']', '}'), nil
 }
 
 func (l *Service) uploadPendingChunk(ctx context.Context, day string, pending *pendingBatch) (*codec.ChunkEntry, error) {

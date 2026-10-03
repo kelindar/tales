@@ -133,10 +133,16 @@ format version 1: actor bitmaps followed by independently compressed zstd frames
 each containing at most 256 KiB of raw event frames. Events never cross a block
 boundary. The manifest stores `version: 1` and a `blocks` directory with each
 block's first event ordinal, entry count, compressed offset, and compressed size.
+New directories also include an optional `time` pair with the block's minimum and
+maximum milliseconds since UTC midnight, including when the writer's clock moves
+backward. Existing directories without these bounds remain readable.
 Offsets are relative to the event payload, after the actor bitmaps.
 
 Queries intersect actor bitmaps, fetch only matching blocks, and combine adjacent
-blocks into one range request. Compaction preserves this directory and the
+blocks into one range request. Timestamp bounds also exclude blocks outside the
+query window. Pages read enough possible matches to fill the page, then skip
+blocks that fall before the exclusive cursor or cannot improve the retained
+results. Compaction preserves this directory and the
 compressed frames, including when it copies payloads server-side. Event encoding,
 ordering, and cursors are unchanged.
 

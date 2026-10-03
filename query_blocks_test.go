@@ -83,8 +83,10 @@ func TestPayloadReads(t *testing.T) {
 				}
 				client := &payloadClient{data: append([]byte{9, 9, 9}, encoded...)}
 				service := &Service{codec: c, s3Client: client}
-				got, err := service.queryPayload(context.Background(), codec.ObjectRange{Offset: 3, Size: int64(len(encoded))}, directory, 4, day, from, to, []uint32{1}, "0000000000000001", 100, selected)
+				var found eventSelection
+				err := service.queryPayload(context.Background(), codec.ObjectRange{Offset: 3, Size: int64(len(encoded))}, directory, 4, day, from, to, []uint32{1}, "0000000000000001", 100, selected, &found)
 				require.NoError(t, err)
+				got := found.refs
 				// Check both directions, ties, rollback, payload offsets and writer-local positions.
 				for _, ascending := range []bool{true, false} {
 					sortEventRefs(got, ascending)
@@ -140,9 +142,9 @@ func TestPayloadReads(t *testing.T) {
 					cancel()
 				}
 				service := &Service{codec: c, s3Client: client}
-				got, err := service.queryPayload(ctx, codec.ObjectRange{Size: int64(len(client.data))}, directory, 4, day, day, day.Add(time.Second), []uint32{1}, "0000000000000001", 0, selected)
+				found := eventSelection{limit: 1}
+				err := service.queryPayload(ctx, codec.ObjectRange{Size: int64(len(client.data))}, directory, 4, day, day, day.Add(time.Second), []uint32{1}, "0000000000000001", 0, selected, &found)
 				assert.Error(t, err)
-				assert.Empty(t, got)
 				switch scenario {
 				case "range":
 					assert.ErrorIs(t, err, failure)
@@ -284,11 +286,12 @@ func benchmarkPayload(b *testing.B, count, size int, random bool) {
 				b.ReportAllocs()
 				b.ResetTimer()
 				for i := 0; i < b.N; i++ {
-					refs, err := service.queryPayload(context.Background(), codec.ObjectRange{Key: "payload", ETag: etag, Size: int64(len(data))}, blocks, batch.Entries, day, day, day.Add(time.Hour), []uint32{1}, service.config.WriterID, 0, selected)
+					var found eventSelection
+					err := service.queryPayload(context.Background(), codec.ObjectRange{Key: "payload", ETag: etag, Size: int64(len(data))}, blocks, batch.Entries, day, day, day.Add(time.Hour), []uint32{1}, service.config.WriterID, 0, selected, &found)
 					if err != nil {
 						b.Fatal(err)
 					}
-					if len(refs) != int(selected.Count()) {
+					if len(found.refs) != int(selected.Count()) {
 						b.Fatal("wrong result count")
 					}
 				}

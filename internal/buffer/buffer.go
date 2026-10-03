@@ -124,20 +124,27 @@ func (b *Buffer) compress() ([]byte, []codec.Block, error) {
 	for start := 0; start < len(b.data); {
 		end := start
 		var count uint32
+		var bounds [2]uint32
 		for end < len(b.data) {
-			_, size, err := codec.ValidateEntry(b.data[end:])
+			entry, size, err := codec.ValidateEntry(b.data[end:])
 			if err != nil {
 				return nil, nil, err
 			}
 			if end > start && end-start+size > target {
 				break
 			}
+			if count == 0 {
+				bounds = [2]uint32{entry.Millis(), entry.Millis()}
+			} else {
+				bounds[0] = min(bounds[0], entry.Millis())
+				bounds[1] = max(bounds[1], entry.Millis())
+			}
 			end += size
 			count++
 		}
 		offset := len(data)
 		data = b.codec.Append(data, b.data[start:end])
-		blocks = append(blocks, codec.Block{First: first, Entries: count, Offset: int64(offset), Size: int64(len(data) - offset)})
+		blocks = append(blocks, codec.Block{First: first, Entries: count, Offset: int64(offset), Size: int64(len(data) - offset), Time: &bounds})
 		first += count
 		start = end
 	}

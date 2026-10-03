@@ -2,10 +2,13 @@ package tales
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	s3mock "github.com/kelindar/s3/mock"
+	"github.com/kelindar/tales/internal/codec"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -48,4 +51,86 @@ func TestSyncCancellation(t *testing.T) {
 	require.ErrorIs(t, service.Sync(ctx), context.Canceled)
 	require.NoError(t, service.Sync(context.Background()))
 	require.Equal(t, []string{"one"}, eventTexts(collectEvents(t, service.Scan(context.Background(), now, now, 1))))
+}
+
+func TestManifestEncoding(t *testing.T) {
+	for _, chunks := range []int{0, 1, 1000} {
+		t.Run(fmt.Sprint(chunks), func(t *testing.T) {
+			manifest := seedManifest(chunks)
+			if chunks == 0 {
+				manifest.Chunks = nil
+			}
+			next := seedManifest(chunks + 1)
+			next.Chunks[chunks].ETag = "\"etag\\\n\x00<>&\u2028雪\""
+			next.Chunks[chunks].Actors = map[uint32]codec.Range{1: {Size: 4}, 10: {Offset: 8, Size: 4}, 2: {Offset: 4, Size: 4}}
+			next.Chunks[chunks].BitmapSize = 12
+			next.Chunks[chunks].Data.Offset = 12
+			next.Chunks[chunks].Size = 13
+			require.NoError(t, codec.ValidateManifest(next, next.Day, next.Writer))
+			state := &writerState{}
+			data, err := state.encodeManifest(manifest, next)
+			require.NoError(t, err)
+			want, err := codec.Encode(next)
+			require.NoError(t, err)
+			assert.Equal(t, want, data)
+			retained := append([]byte(nil), data...)
+
+			// A retry must produce the same bytes without changing an earlier upload.
+			again, err := state.encodeManifest(manifest, next)
+			require.NoError(t, err)
+			assert.Equal(t, want, again)
+			assert.Equal(t, retained, data)
+
+			next.Chunks[chunks].ETag = "different"
+			changed, err := state.encodeManifest(manifest, next)
+			require.NoError(t, err)
+			want, err = codec.Encode(next)
+			require.NoError(t, err)
+			assert.Equal(t, want, changed)
+			assert.Equal(t, retained, data, "later uploads must not mutate retained publication bytes")
+		})
+	}
+}
+
+func TestManifestAllocation(t *testing.T) {
+	manifest, next := seedManifest(1000), seedManifest(1001)
+	state := &writerState{}
+	_, err := state.encodeManifest(manifest, next)
+	require.NoError(t, err)
+	allocations := testing.AllocsPerRun(20, func() {
+		_, err = state.encodeManifest(manifest, next)
+	})
+	require.NoError(t, err)
+	assert.LessOrEqual(t, allocations, float64(32), "committed chunks must not be marshalled again")
+}
+
+func BenchmarkManifest(b *testing.B) {
+	for _, chunks := range []int{0, 1000} {
+		b.Run(fmt.Sprint(chunks), func(b *testing.B) {
+			manifest, next := seedManifest(chunks), seedManifest(chunks+1)
+			state := &writerState{}
+			_, err := state.encodeManifest(manifest, next)
+			require.NoError(b, err)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				_, err = state.encodeManifest(manifest, next)
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func seedManifest(chunks int) *codec.Manifest {
+	manifest := &codec.Manifest{Day: "2026-07-19", Writer: "0123456789abcdef", Chunks: make([]codec.ChunkEntry, chunks)}
+	for i := range manifest.Chunks {
+		manifest.Chunks[i] = codec.ChunkEntry{
+			Version: 1, Blocks: []codec.Block{{Entries: 1, Size: 1}}, Sequence: codec.Sequence(i),
+			Entries: 1, BitmapSize: 4, Data: codec.Range{Offset: 4, Size: 1}, Size: 5, ETag: "etag",
+			Actors: map[uint32]codec.Range{1: {Size: 4}},
+		}
+	}
+	return manifest
 }
