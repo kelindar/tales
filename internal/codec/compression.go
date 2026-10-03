@@ -4,6 +4,8 @@
 package codec
 
 import (
+	"math"
+
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -21,8 +23,8 @@ func NewCodec() (*Codec, error) {
 		return nil, &CompressionError{Operation: "create encoder", Err: err}
 	}
 
-	// Create decoder with default settings
-	decoder, err := zstd.NewReader(nil)
+	// Writers flush at 8 MiB, with at most one final uint16-sized event.
+	decoder, err := zstd.NewReader(nil, zstd.WithDecoderMaxMemory(8<<20+math.MaxUint16))
 	if err != nil {
 		encoder.Close() // Clean up encoder if decoder creation fails
 		return nil, &CompressionError{Operation: "create decoder", Err: err}

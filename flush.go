@@ -231,6 +231,7 @@ func (l *Service) rejectCompactedDay(ctx context.Context, day time.Time) error {
 func (l *Service) invalidateDiscovery(day string) {
 	l.cacheMu.Lock()
 	delete(l.discovery, day)
+	l.discoveryEpoch++
 	l.cacheMu.Unlock()
 }
 

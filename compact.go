@@ -46,12 +46,18 @@ func (l *Service) Compact(ctx context.Context, value time.Time) error {
 		return fmt.Errorf("day %s is too recent to compact", dayKey(day))
 	}
 	dayName := dayKey(day)
+
+	// A previous metadata upload may have committed despite returning an error.
+	l.cacheMu.Lock()
+	delete(l.compactMiss, dayName)
+	l.cacheMu.Unlock()
 	if existing, ok, err := l.compactMetadata(ctx, dayName); err != nil {
 		return err
 	} else if ok {
 		return l.cleanupCompacted(ctx, existing)
 	}
 
+	l.invalidateDiscovery(dayName)
 	manifests, err := l.discoverManifests(ctx, day)
 	if err != nil {
 		return err

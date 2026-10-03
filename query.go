@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"path"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -260,18 +261,23 @@ func (l *Service) queryDay(ctx context.Context, snapshot querySnapshot, day, fro
 		return err
 	}
 	if compact {
-		err = l.queryCompactDay(ctx, day, from, to, actors, meta, found)
+		err = l.queryCompactDay(ctx, snapshot, day, from, to, actors, meta, found)
 		var invalid invalidBitmapError
-		if s3.IsNoSuchKey(err) || errors.As(err, &invalid) {
+		switch {
+		case s3.IsNoSuchKey(err) || errors.As(err, &invalid):
 			l.cacheMu.Lock()
 			delete(l.compactMeta, key)
 			l.cacheMu.Unlock()
 			clear(found.refs)
 			found.refs = found.refs[:0]
-			err = l.queryWriterDay(ctx, snapshot, day, from, to, actors, found)
+			err = l.queryWriterDay(ctx, snapshot, day, from, to, actors, nil, found)
+		case err == nil:
+			// Compaction covers a prefix of each writer's manifest. Include
+			// chunks committed after that snapshot, even during publication.
+			err = l.queryWriterDay(ctx, snapshot, day, from, to, actors, meta.Sources, found)
 		}
 	} else {
-		err = l.queryWriterDay(ctx, snapshot, day, from, to, actors, found)
+		err = l.queryWriterDay(ctx, snapshot, day, from, to, actors, nil, found)
 	}
 	if err != nil {
 		return err
@@ -287,17 +293,20 @@ func (l *Service) queryDay(ctx context.Context, snapshot querySnapshot, day, fro
 	return nil
 }
 
-func (l *Service) queryWriterDay(ctx context.Context, snapshot querySnapshot, day, from, to time.Time, actors []uint32, found *eventSelection) error {
+func (l *Service) queryWriterDay(ctx context.Context, snapshot querySnapshot, day, from, to time.Time, actors []uint32, covered []codec.CompactSource, found *eventSelection) error {
 	dayName := dayKey(day)
 	manifests, err := l.discoverManifests(ctx, day)
 	if err != nil {
 		return err
 	}
 	for _, manifest := range manifests {
+		last := sort.Search(len(covered), func(i int) bool { return covered[i].Writer > manifest.Writer }) - 1
 		var base uint64
 		for _, chunk := range manifest.Chunks {
-			if err := l.queryWriterChunk(ctx, snapshot, day, dayName, from, to, actors, manifest.Writer, chunk, base, found); err != nil {
-				return err
+			if last < 0 || covered[last].Writer != manifest.Writer || chunk.Sequence > covered[last].Sequence {
+				if err := l.queryWriterChunk(ctx, snapshot, day, dayName, from, to, actors, manifest.Writer, chunk, base, found); err != nil {
+					return err
+				}
 			}
 			base += uint64(chunk.Entries)
 		}
@@ -307,10 +316,8 @@ func (l *Service) queryWriterDay(ctx context.Context, snapshot querySnapshot, da
 
 func (l *Service) queryWriterChunk(ctx context.Context, snapshot querySnapshot, day time.Time, dayName string, from, to time.Time, actors []uint32, writer string, chunk codec.ChunkEntry, base uint64, found *eventSelection) error {
 	sequence := uint64(chunk.Sequence)
-	if writer == l.config.WriterID {
-		if cutoff, ok := snapshot.cutoffs[dayName]; ok && (!cutoff.committed || sequence > cutoff.sequence) {
-			return nil
-		}
+	if l.skipSnapshot(snapshot, dayName, writer, sequence) {
+		return nil
 	}
 	fromMillis, toMillis := queryMillis(day, from, to)
 	if !chunk.Between(fromMillis, toMillis) {
@@ -324,7 +331,15 @@ func (l *Service) queryWriterChunk(ctx context.Context, snapshot querySnapshot, 
 	return l.queryPayload(ctx, codec.ObjectRange{Key: key, ETag: chunk.ETag, Offset: chunk.Data.Offset, Size: chunk.Data.Size}, chunk.Blocks, chunk.Entries, day, from, to, actors, writer, base, selected, found)
 }
 
-func (l *Service) queryCompactDay(ctx context.Context, day, from, to time.Time, actors []uint32, meta *codec.CompactMetadata, found *eventSelection) error {
+func (l *Service) skipSnapshot(snapshot querySnapshot, day, writer string, sequence uint64) bool {
+	if writer != l.config.WriterID {
+		return false
+	}
+	cutoff, ok := snapshot.cutoffs[day]
+	return ok && (!cutoff.committed || sequence > cutoff.sequence)
+}
+
+func (l *Service) queryCompactDay(ctx context.Context, snapshot querySnapshot, day, from, to time.Time, actors []uint32, meta *codec.CompactMetadata, found *eventSelection) error {
 	selected, err := l.chunkOrdinals(ctx, meta.Index.Key, meta.Index.ETag, meta.Actors, compactEntries(meta), actors)
 	if err != nil {
 		return err
@@ -355,7 +370,7 @@ func (l *Service) queryCompactDay(ctx context.Context, day, from, to time.Time, 
 			writer, base = source.Writer, 0
 		}
 		local := selectedBySource[i]
-		if source.Time[0] > toMillis || source.Time[1] < fromMillis || local == nil {
+		if source.Time[0] > toMillis || source.Time[1] < fromMillis || local == nil || l.skipSnapshot(snapshot, meta.Day, source.Writer, uint64(source.Sequence)) {
 			base += uint64(source.Entries)
 			continue
 		}
@@ -436,11 +451,11 @@ func (s *eventSelection) collectFrames(raw []byte, expected, first uint32, day, 
 func (l *Service) discoverManifests(ctx context.Context, day time.Time) ([]*codec.Manifest, error) {
 	key := dayKey(day)
 	now := l.config.now().UTC()
-	historical := day.Before(dayOf(now).AddDate(0, 0, -1))
 	l.cacheMu.Lock()
 	cached, ok := l.discovery[key]
+	epoch := l.discoveryEpoch
 	l.cacheMu.Unlock()
-	if ok && (historical || now.Sub(cached.at) < l.config.ChunkInterval) {
+	if ok && now.Sub(cached.at) < l.config.ChunkInterval {
 		return cached.manifests, nil
 	}
 
@@ -476,8 +491,12 @@ func (l *Service) discoverManifests(ctx context.Context, day time.Time) ([]*code
 	if err := errors.Join(errs...); err != nil {
 		return nil, err
 	}
+
+	// Don't repopulate a cache invalidated while these downloads were in flight.
 	l.cacheMu.Lock()
-	l.discovery[key] = discoveryCache{at: now, manifests: manifests}
+	if epoch == l.discoveryEpoch {
+		l.discovery[key] = discoveryCache{at: now, manifests: manifests}
+	}
 	l.cacheMu.Unlock()
 	return manifests, nil
 }

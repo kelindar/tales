@@ -14,6 +14,7 @@ import (
 	"github.com/kelindar/tales/internal/buffer"
 	"github.com/kelindar/tales/internal/codec"
 	internals3 "github.com/kelindar/tales/internal/s3"
+	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -162,6 +163,57 @@ func (c *measuredClient) DownloadRange(ctx context.Context, key, etag string, of
 	c.bytes += size
 	c.requests++
 	return c.Client.DownloadRange(ctx, key, etag, offset, size)
+}
+
+func TestDecodeLimit(t *testing.T) {
+	server := s3mock.New("events", "us-east-1")
+	defer server.Close()
+	day := time.Date(2026, 7, 19, 0, 0, 0, 0, time.UTC)
+	now := day.Add(time.Hour)
+	writer := testService(t, server, "decode-limit", "writer", func(c *config) {
+		c.now = func() time.Time { return now }
+	})
+	defer func() { require.NoError(t, writer.Close()) }()
+	require.NoError(t, writer.Log("valid", 1))
+	require.NoError(t, writer.Sync(context.Background()))
+	manifest, err := writer.downloadManifest(context.Background(), dayKey(day), writer.config.WriterID)
+	require.NoError(t, err)
+	chunk := manifest.Chunks[0]
+	key := keyOfChunk(dayKey(day), writer.config.WriterID, 0)
+	original, err := writer.s3Client.Download(context.Background(), key)
+	require.NoError(t, err)
+	entry, err := codec.NewLogEntry(uint32(time.Hour/time.Millisecond), "valid", []uint32{1})
+	require.NoError(t, err)
+	raw := make([]byte, 10<<20)
+	copy(raw, entry)
+	compressed, err := writer.codec.Compress(raw)
+	require.NoError(t, err)
+	require.Less(t, len(compressed), 64<<10)
+	payload := append(append([]byte(nil), original[:int(chunk.BitmapSize)]...), compressed...)
+	chunk.ETag, err = writer.s3Client.Upload(context.Background(), key, payload)
+	require.NoError(t, err)
+	chunk.Size = int64(len(payload))
+	chunk.Data.Size = int64(len(compressed))
+	chunk.Blocks = []codec.Block{{First: 0, Entries: 1, Offset: 0, Size: int64(len(compressed)), Time: &chunk.Time}}
+	manifest.Chunks[0] = chunk
+	require.NoError(t, codec.ValidateManifest(manifest, dayKey(day), writer.config.WriterID))
+	encoded, err := codec.Encode(manifest)
+	require.NoError(t, err)
+	_, err = writer.s3Client.Upload(context.Background(), keyOfManifest(dayKey(day), writer.config.WriterID), encoded)
+	require.NoError(t, err)
+
+	reader := testService(t, server, "decode-limit", "reader", func(c *config) {
+		c.now = func() time.Time { return now }
+	})
+	defer func() { require.NoError(t, reader.Close()) }()
+	var queryErr error
+	for _, err := range reader.Scan(context.Background(), day, day.Add(24*time.Hour-time.Millisecond), 1) {
+		if err != nil {
+			queryErr = err
+			break
+		}
+	}
+	assert.ErrorIs(t, queryErr, zstd.ErrDecoderSizeExceeded)
 }
 
 func TestSelectiveBlocks(t *testing.T) {

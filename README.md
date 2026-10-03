@@ -157,7 +157,7 @@ if err := logger.Compact(ctx, day); err != nil {
 }
 ```
 
-Compaction is optional and safe to retry. Queries use writer files until compacted metadata is committed.
+Compaction is optional and safe to retry. Queries read compacted sources and any chunks committed while compaction was running. Readers refresh writer manifests at their configured flush interval.
 
 ## Options
 
